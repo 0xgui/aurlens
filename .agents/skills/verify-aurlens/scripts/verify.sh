@@ -44,9 +44,9 @@ case "${1:-run}" in
         AURLENS_VERIFY_BIN="$binary" AURLENS_VERIFY_EVIDENCE_DIR="$evidence" \
             "$cargo_bin" test "${cargo_flags[@]}" --test review user_journey_evidence \
             -- --exact --nocapture > "$evidence/drive.log" 2>&1
-        jq -e '.passed == true and .scratch_removed == true and (.journeys | length) == 7' \
+        jq -e '.passed == true and .scratch_removed == true and (.journeys | length) == 8' \
             "$evidence/summary.json" > /dev/null
-        printf 'All seven CLI journeys passed.\n'
+        printf 'All eight CLI journeys passed.\n'
         ;;
     *)
         printf 'Usage: %s doctor | run [new-evidence-directory]\n' "$0" >&2

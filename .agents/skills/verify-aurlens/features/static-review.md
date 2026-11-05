@@ -5,6 +5,7 @@ Users scan a local package checkout and inspect source evidence before deciding 
 ## Sub-features
 
 - `static-clean` returns no findings and explicitly marks AI not run.
+- `static-text` renders the normal text report without the JSON flag.
 - `static-block` identifies a remote-shell pattern with source evidence and exit 2.
 - `no-execution` leaves the inert recipe's marker absent.
 
@@ -18,6 +19,7 @@ Preconditions: a release build passes Doctor and the helper has a new evidence d
 
 - Run `scripts/verify.sh run` from the skill directory or use the full helper path from the repo root.
 - Inspect `static-clean.action.json` and `static-clean.stdout.json`. Exit 0, `decision = no_findings`, complete local coverage, and `ai.state = not_run` prove the static path.
+- Inspect `static-text.action.json` and `static-text.stdout.txt`. The command omits `--json`, exits 0, and prints `AURLens: NoFindings` and `AI: not run`.
 - Inspect `static-block.action.json` and `static-block.stdout.json`. Exit 2 and a `REMOTE-SHELL` finding citing `PKGBUILD` prove blocking behavior.
 - `summary.json` records the verified absence of recipe execution after the fixture directory is removed.
 

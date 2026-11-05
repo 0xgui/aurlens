@@ -42,6 +42,29 @@ fn user_journey_evidence() {
         "pkgname=example\ntouch marker-must-not-exist\n",
     )
     .unwrap();
+    let binary = std::env::var_os("AURLENS_VERIFY_BIN")
+        .unwrap_or_else(|| env!("CARGO_BIN_EXE_aurlens").into());
+    let text_output = Command::new(&binary)
+        .arg("scan")
+        .arg(&root)
+        .output()
+        .unwrap();
+    fs::write(evidence.join("static-text.stdout.txt"), &text_output.stdout).unwrap();
+    fs::write(evidence.join("static-text.stderr.txt"), &text_output.stderr).unwrap();
+    fs::write(
+        evidence.join("static-text.action.json"),
+        serde_json::to_vec_pretty(&json!({
+            "binary":binary.to_string_lossy(),"args":["scan",root.to_str().unwrap()],
+            "exit_code":text_output.status.code()
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(text_output.status.code(), Some(0));
+    let rendered = String::from_utf8(text_output.stdout).unwrap();
+    assert!(rendered.contains("AURLens: NoFindings"));
+    assert!(rendered.contains("AI: not run"));
+    assert!(!root.join("marker-must-not-exist").exists());
     let drive = |name: &str, extra: &[&str], expected: i32| -> Value {
         let output = cli(&root, extra);
         let arguments: Vec<_> = ["scan", root.to_str().unwrap(), "--json"]
@@ -159,7 +182,7 @@ fn user_journey_evidence() {
     drop(scratch);
     assert!(!scratch_path.exists());
     fs::write(evidence.join("summary.json"),serde_json::to_vec_pretty(&json!({
-        "passed":true,"journeys":["static-clean","static-block","update-diff","ai-block-preserved","ai-invalid-evidence","changed-during-ai","external-symlink"],
+        "passed":true,"journeys":["static-text","static-clean","static-block","update-diff","ai-block-preserved","ai-invalid-evidence","changed-during-ai","external-symlink"],
         "scratch_removed":true,"recipe_executed":false,"real_model_contacted":false
     })).unwrap()).unwrap();
     println!("Verification evidence: {}", evidence.display());

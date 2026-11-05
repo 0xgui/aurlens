@@ -51,9 +51,9 @@ With dependencies already cached, set `AURLENS_VERIFY_OFFLINE=1` to use Cargo's 
 
 ## Evidence
 
-Each journey saves its action arguments and exit code, stdout JSON, and stderr. `doctor.txt` identifies the tested executable and lockfile. `ai-valid.request.json` records the inert source actually sent to the local model fixture. `summary.json` appears only after assertions and fixture cleanup succeed.
+Each journey saves its action arguments and exit code, stdout, and stderr. The `static-text` journey records a plain-text report; the other journeys record JSON. `doctor.txt` identifies the tested executable and lockfile. `ai-valid.request.json` records the inert source actually sent to the local model fixture. `summary.json` appears only after assertions and fixture cleanup succeed.
 
-Require all seven mapped journeys in `summary.json`, `passed = true`, and `scratch_removed = true`. Inspect the corresponding action and output artifacts for the feature under review. Source hashes and reported AI status must match the exercised path. A test count or successful compile alone does not prove CLI behavior.
+Require all eight mapped journeys in `summary.json`, `passed = true`, and `scratch_removed = true`. Inspect the corresponding action and output artifacts for the feature under review. Source hashes and reported AI status must match the exercised path. A test count or successful compile alone does not prove CLI behavior.
 
 The harness checks that inert recipe text never creates its marker, an external symlink's sentinel never enters output, blocking findings survive a clean AI reply, invalid AI evidence fails, and changed source prevents completion. Reports are about local text only. Local fixtures do not evaluate real-model accuracy, cloud TLS behavior, upstream-source analysis, or future Shelly integration.
 

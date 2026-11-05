@@ -68,7 +68,7 @@ cargo clippy --locked --all-targets -- -D warnings
 
 Tests use temporary directories and local HTTP fixtures. They do not call a paid model, install a package, or execute a recipe. The CLI and library share one review operation.
 
-The project-local [verify-aurlens skill](.agents/skills/verify-aurlens/SKILL.md) drives seven user journeys through the release CLI and retains commands, JSON reports, and fixture evidence. Run its helper with Bash and jq available:
+The project-local [verify-aurlens skill](.agents/skills/verify-aurlens/SKILL.md) drives eight user journeys through the release CLI and retains commands, text and JSON reports, and fixture evidence. Run its helper with Bash and jq available:
 
 ```sh
 .agents/skills/verify-aurlens/scripts/verify.sh run
