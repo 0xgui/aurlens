@@ -1,4 +1,4 @@
-use aurlens::{ReviewOptions, load_config, review};
+use aurlens::{ReviewOptions, load_config, review, verify_snapshot};
 use clap::{Parser, Subcommand};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -29,18 +29,34 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Check whether a local checkout still matches a previously reviewed snapshot.
+    Verify {
+        path: PathBuf,
+        #[arg(long)]
+        snapshot_digest: String,
+        /// Emit the versioned machine-readable verification report.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 fn main() -> ExitCode {
-    let Cli {
-        command:
-            Commands::Scan {
-                path,
-                baseline,
-                config,
-                json,
-            },
-    } = Cli::parse();
+    match Cli::parse().command {
+        Commands::Scan {
+            path,
+            baseline,
+            config,
+            json,
+        } => scan(path, baseline, config, json),
+        Commands::Verify {
+            path,
+            snapshot_digest,
+            json,
+        } => verify(&path, &snapshot_digest, json),
+    }
+}
+
+fn scan(path: PathBuf, baseline: Option<PathBuf>, config: Option<PathBuf>, json: bool) -> ExitCode {
     let ai = match config {
         Some(config) => {
             if inside_checkout(&config, &path)
@@ -69,6 +85,30 @@ fn main() -> ExitCode {
         serde_json::to_string_pretty(&report).expect("review report is serializable")
     } else {
         render(&report)
+    };
+    if writeln!(io::stdout().lock(), "{text}").is_err() {
+        eprintln!("AURLens could not write its report.");
+        return ExitCode::from(3);
+    }
+    ExitCode::from(report.exit_code)
+}
+
+fn verify(path: &Path, expected_digest: &str, json: bool) -> ExitCode {
+    let report = verify_snapshot(path, expected_digest);
+    let text = if json {
+        serde_json::to_string_pretty(&report).expect("verification report is serializable")
+    } else {
+        let status = match report.status {
+            aurlens::VerificationStatus::Matched => "matched",
+            aurlens::VerificationStatus::Changed => "changed",
+            aurlens::VerificationStatus::Incomplete => "incomplete",
+        };
+        let mut lines = vec![format!("AURLens snapshot: {status}")];
+        for issue in &report.issues {
+            lines.push(format!("Issue: {}", issue.escape_debug()));
+        }
+        lines.push(report.notice.clone());
+        lines.join("\n")
     };
     if writeln!(io::stdout().lock(), "{text}").is_err() {
         eprintln!("AURLens could not write its report.");

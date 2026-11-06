@@ -180,3 +180,32 @@ pub struct ReviewReport {
     pub revalidated: bool,
     pub notice: String,
 }
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VerificationStatus {
+    Matched,
+    Changed,
+    Incomplete,
+}
+
+impl VerificationStatus {
+    pub fn exit_code(self) -> u8 {
+        match self {
+            Self::Matched => 0,
+            Self::Changed | Self::Incomplete => 3,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct VerificationReport {
+    pub schema_version: u32,
+    pub operation: String,
+    pub status: VerificationStatus,
+    pub exit_code: u8,
+    pub expected_digest: String,
+    pub snapshot_digest: Option<String>,
+    pub issues: Vec<String>,
+    pub notice: String,
+}
