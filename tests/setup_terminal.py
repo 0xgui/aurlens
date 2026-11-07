@@ -1,4 +1,3 @@
-"""Exercise cancelled hidden entry against the real CLI using a private PTY."""
 import os
 from pathlib import Path
 import pty
