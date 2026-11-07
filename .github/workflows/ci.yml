@@ -41,7 +41,7 @@ jobs:
           curl --fail --location --retry 3 https://ziglang.org/download/0.17.0/zig-x86_64-linux-0.17.0.tar.xz -o "$zig_dir/zig.tar.xz"
           printf '%s  %s\n' 1cbe9df9f27e6b78d14ccbca43b6703a404ef79ef1c463de901d7f088d4e2026 "$zig_dir/zig.tar.xz" | sha256sum --check --strict
           tar -xJf "$zig_dir/zig.tar.xz" -C "$zig_dir"
-          "$zig_dir/zig-x86_64-linux-0.17.0/zig" fmt --check integrations/shelly/aurlens.zig
+          "$zig_dir/zig-x86_64-linux-0.17.0/zig" fmt --check integrations/shelly
           "$zig_dir/zig-x86_64-linux-0.17.0/zig" test integrations/shelly/aurlens.zig
 
   minimum-rust:
@@ -50,3 +50,18 @@ jobs:
       - uses: actions/checkout@v4
       - run: rustup toolchain install 1.85.0 --profile minimal
       - run: cargo +1.85.0 test --locked
+
+  secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Scan Git history for secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 3 https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz -o "$RUNNER_TEMP/gitleaks.tar.gz"
+          printf '%s  %s\n' 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb "$RUNNER_TEMP/gitleaks.tar.gz" | sha256sum --check --strict
+          tar -xzf "$RUNNER_TEMP/gitleaks.tar.gz" -C "$RUNNER_TEMP" gitleaks
+          "$RUNNER_TEMP/gitleaks" git --redact=100 --no-banner --ignore-gitleaks-allow --log-opts=--all .
