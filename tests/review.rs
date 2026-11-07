@@ -1,4 +1,4 @@
-use aurlens::{AiConfig, AiResult, Decision, ReviewOptions, review};
+use aurlens::{AiConfig, AiResult, Decision, HttpConfig, ReviewOptions, review};
 use serde_json::{Value, json};
 use std::fs;
 use std::io::{Read, Write};
@@ -119,7 +119,7 @@ fn user_journey_evidence() {
     let write_config = |config: &AiConfig| {
         fs::write(&config_path, format!(
             "[ai]\nendpoint={:?}\nmodel='fixture-model'\nsend_source=true\nallow_loopback_http=true\ntimeout_seconds=5\n",
-            config.endpoint
+            match config { AiConfig::Http(config) => &config.endpoint, _ => panic!("expected HTTP") }
         )).unwrap();
     };
 
@@ -240,16 +240,17 @@ where
         write!(stream,"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).unwrap();
     });
     (
-        AiConfig {
+        AiConfig::Http(HttpConfig {
             endpoint,
             model: "fixture-model".into(),
             api_key_env: None,
+            api_key_file: None,
             allow_loopback_http: true,
             send_source: true,
             timeout_seconds: 5,
             max_request_bytes: 4_194_304,
             max_response_bytes: 131_072,
-        },
+        }),
         handle,
     )
 }
@@ -467,4 +468,39 @@ fn cli_rejects_configuration_from_checkout_and_emits_json() {
     let report: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(report["decision"], "incomplete");
     assert_eq!(report["coverage"]["issues"][0], "config_inside_checkout");
+}
+
+#[test]
+fn credentials_inside_current_or_baseline_are_never_disclosed() {
+    use std::os::unix::fs::PermissionsExt;
+    let current = package("pkgname=current\n");
+    let baseline = package("pkgname=old\n");
+    for root in [current.path(), baseline.path()] {
+        let key = root.join("private-key");
+        fs::write(&key, "private-fixture-key").unwrap();
+        fs::set_permissions(&key, fs::Permissions::from_mode(0o600)).unwrap();
+        // An unreachable endpoint distinguishes pre-dispatch rejection from transport.
+        let report = review(
+            current.path(),
+            &ReviewOptions {
+                baseline: Some(baseline.path().into()),
+                ai: Some(AiConfig::Http(HttpConfig {
+                    endpoint: "http://127.0.0.1:9/v1/chat/completions".into(),
+                    model: "test".into(),
+                    api_key_env: None,
+                    api_key_file: Some(key),
+                    allow_loopback_http: true,
+                    send_source: true,
+                    timeout_seconds: 1,
+                    max_request_bytes: 4_194_304,
+                    max_response_bytes: 131_072,
+                })),
+                ..ReviewOptions::default()
+            },
+        );
+        assert_eq!(report.decision, Decision::Incomplete);
+        assert!(
+            matches!(report.ai, AiResult::Incomplete { reason } if reason == "ai_credentials_in_source")
+        );
+    }
 }
