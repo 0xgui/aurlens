@@ -10,4 +10,16 @@ The design candidates and separate judge ran on the available native model. Exte
 
 Rust replaced the initial Python sketch at the user's request before publication. Owned file descriptors provide cleanup through RAII, enums describe result states, and `unsafe` code is forbidden. Runtime bounds remain necessary for untrusted package files and external model responses.
 
-The first implementation owns local checkout review only. Dependency fetching, remote-source analysis, approval persistence, and Shelly execution are separate work. The [threat model](threat-model.md) defines the current limits.
+The scanner owns local checkout review and a separate digest-verification operation. Dependency fetching, remote-source analysis, and Shelly execution remain outside the scanner. The [threat model](threat-model.md) defines the current limits.
+
+## Binding a native manager to a review
+
+The experimental Shelly adapter keeps the accepted external digest in an operation-local approval. A typed verification result distinguishes matched, changed, and incomplete observations. The initial security decision remains separate. This prevents equality from becoming an accidental approval for a blocked recipe.
+
+Two integration shapes were compared. A filesystem gate reuses Rust's existing no-follow traversal and digest algorithm. An owned-input protocol would let Shelly send immutable bytes, but its existing review snapshots contain only declared related files. They omit undeclared helpers and directory inventory. Claiming whole-checkout coverage from those snapshots would be false.
+
+The filesystem gate was selected for the experiment because it needs no second traversal implementation or cross-language hash algorithm. The owned-input comparison contributed explicit metadata-evaluation enforcement and invalidation after controlled version edits. Both shapes still need a stable execution workspace. Whole-checkout coverage deliberately refuses dirty caches rather than silently omitting build outputs.
+
+Two native Codex directional candidates informed this integration design. Claude and Grok lanes could not start because their launcher required Bun. No cross-provider judge ran. This is a review limitation, not evidence of multi-provider agreement.
+
+Normal Shelly use and package updates are a delivery constraint. The development patch proves an interface in an isolated copy. It is not a distribution strategy for a maintained Shelly fork. The production path needs a supported native hook and a recipe workspace separated from build outputs.

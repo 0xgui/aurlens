@@ -8,7 +8,10 @@ mod snapshot;
 use std::path::{Path, PathBuf};
 
 pub use ai::{AiError, load_config};
-pub use model::{AiConfig, AiResult, Decision, Limits, ReviewReport, Severity};
+pub use model::{
+    AiConfig, AiResult, Decision, Limits, ReviewReport, Severity, VerificationReport,
+    VerificationStatus,
+};
 use model::{Coverage, FileSummary, Finding, Snapshot};
 
 #[derive(Clone, Debug, Default)]
@@ -16,6 +19,51 @@ pub struct ReviewOptions {
     pub baseline: Option<PathBuf>,
     pub ai: Option<AiConfig>,
     pub limits: Limits,
+}
+
+pub fn verify_snapshot(path: &Path, expected_digest: &str) -> VerificationReport {
+    let mut report = VerificationReport {
+        schema_version: 1,
+        operation: "verify_snapshot".into(),
+        status: VerificationStatus::Incomplete,
+        exit_code: 3,
+        expected_digest: expected_digest.into(),
+        snapshot_digest: None,
+        issues: Vec::new(),
+        notice: "A matching snapshot is not a safety certificate or permission to execute package code. The initial review decision must be checked separately.".into(),
+    };
+    if expected_digest.len() != 64
+        || !expected_digest
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        report.issues.push("invalid_snapshot_digest".into());
+        return report;
+    }
+
+    let limits = Limits::default();
+    let result = snapshot::capture(path, &limits).and_then(|snapshot| {
+        report.snapshot_digest = Some(snapshot.digest.clone());
+        snapshot::verify(path, &snapshot, &limits)?;
+        Ok(snapshot.digest)
+    });
+    report.status = match result {
+        Ok(digest) if digest == expected_digest => VerificationStatus::Matched,
+        Ok(_) => {
+            report.issues.push("snapshot_changed".into());
+            VerificationStatus::Changed
+        }
+        Err(error) => {
+            report.issues.push(error.code.into());
+            if error.code == "snapshot_changed" {
+                VerificationStatus::Changed
+            } else {
+                VerificationStatus::Incomplete
+            }
+        }
+    };
+    report.exit_code = report.status.exit_code();
+    report
 }
 
 pub fn review(path: &Path, options: &ReviewOptions) -> ReviewReport {

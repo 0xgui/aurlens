@@ -4,7 +4,7 @@ See what you install.
 
 AURLens reviews local AUR build recipes with deterministic checks and optional AI analysis. It reads package files without executing them, reports suspicious behavior with source evidence, and compares updates against a previous checkout.
 
-This is an early Rust prototype for Linux. It does not yet integrate with Shelly, build packages, fetch AUR dependencies, scan upstream archives, or certify that software is safe. A clean report means no findings within the stated coverage.
+This is an early Rust prototype for Linux. An [experimental Shelly 3.2.0 patch](docs/shelly-integration.md) adds native review gates. Your installed Shelly is unaffected. AURLens does not build packages, fetch AUR dependencies, scan upstream archives, or certify that software is safe. A clean report means no findings within the stated coverage.
 
 ## Run a review
 
@@ -41,6 +41,18 @@ For a cloud provider, use HTTPS and name an environment variable containing its 
 
 The model receives the current package text, relative file names, hashes, and a baseline change summary when requested. Baseline file bodies are not sent. Model responses are untrusted. Each AI finding must cite a real file, line, and matching excerpt. AI can add findings but cannot clear deterministic findings. See [the AI protocol](docs/ai-protocol.md).
 
+## Check a reviewed snapshot
+
+Save the `snapshot_digest` from a completed scan, then check the checkout again before consuming its files:
+
+```sh
+./target/release/aurlens verify /path/to/package --snapshot-digest "$digest" --json
+```
+
+`verify` uses the same filesystem policy and default limits as `scan`. It returns `matched` with exit 0, or `changed` or `incomplete` with exit 3. It never runs AI, reads AI configuration, or executes package code. See [the verification protocol](docs/verification-protocol.md).
+
+A match means the supported contents and modes match the supplied digest. Check the original scan decision separately. A blocked recipe can still match its digest. Verification does not lock files against subsequent changes.
+
 ## Read the result
 
 The text report separates deterministic findings from AI analysis. `--json` returns schema version 1 with file hashes, a snapshot digest, coverage, findings, change metadata, AI status, and the final decision. JSON reports contain source excerpts used as evidence, but not complete source files or API keys.
@@ -68,7 +80,7 @@ cargo clippy --locked --all-targets -- -D warnings
 
 Tests use temporary directories and local HTTP fixtures. They do not call a paid model, install a package, or execute a recipe. The CLI and library share one review operation.
 
-The project-local [verify-aurlens skill](.agents/skills/verify-aurlens/SKILL.md) drives eight user journeys through the release CLI and retains commands, text and JSON reports, and fixture evidence. Run its helper with Bash and jq available:
+The project-local [verify-aurlens skill](.agents/skills/verify-aurlens/SKILL.md) drives scans and snapshot checks through the release CLI and retains commands, text and JSON reports, and fixture evidence. Run its helper with Bash, Python 3, and jq available:
 
 ```sh
 .agents/skills/verify-aurlens/scripts/verify.sh run
@@ -76,6 +88,6 @@ The project-local [verify-aurlens skill](.agents/skills/verify-aurlens/SKILL.md)
 
 Keep the map current as behavior changes with pstack's `maintain-verification-skill` workflow. This does not schedule any recurring work.
 
-The next milestone is [native Shelly integration](docs/shelly-integration.md), including scans before package evaluation, dependency coverage, and an immediate check that build inputs match the reviewed snapshot.
+The [Shelly integration guide](docs/shelly-integration.md) documents its separate native test driver and current limits. Production integration still needs a recipe workspace that stays stable while Shelly creates build outputs.
 
 MIT licensed. All scanner rules in this project are original, limited pattern checks, not copied from other scanners.
