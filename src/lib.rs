@@ -9,8 +9,8 @@ use std::path::{Path, PathBuf};
 
 pub use ai::{AiError, load_config};
 pub use model::{
-    AiConfig, AiResult, Decision, Limits, ReviewReport, Severity, VerificationReport,
-    VerificationStatus,
+    AiConfig, AiResult, CodexConfig, Decision, HttpConfig, Limits, ReviewReport, Severity,
+    VerificationReport, VerificationStatus,
 };
 use model::{Coverage, FileSummary, Finding, Snapshot};
 
@@ -83,7 +83,15 @@ pub fn review(path: &Path, options: &ReviewOptions) -> ReviewReport {
         .map(|(old, new)| snapshot::compare(old, new));
 
     let ai = match (&options.ai, &current, issues.is_empty()) {
-        (Some(config), Some(snapshot), true) => ai::assess(snapshot, changes.as_deref(), config),
+        (Some(config), Some(snapshot), true) => {
+            if credential_in_source(config, path, options.baseline.as_deref()) {
+                AiResult::Incomplete {
+                    reason: "ai_credentials_in_source".into(),
+                }
+            } else {
+                ai::assess(snapshot, changes.as_deref(), config)
+            }
+        }
         (Some(_), _, _) => AiResult::NotRun {
             reason: "incomplete_inputs".into(),
         },
@@ -156,6 +164,22 @@ pub fn review(path: &Path, options: &ReviewOptions) -> ReviewReport {
         notice: "No findings is not a safety certificate or permission to execute package code."
             .into(),
     }
+}
+
+fn credential_in_source(config: &AiConfig, root: &Path, baseline: Option<&Path>) -> bool {
+    let AiConfig::Http(config) = config else {
+        return false;
+    };
+    let Some(key) = config
+        .api_key_file
+        .as_ref()
+        .and_then(|path| path.canonicalize().ok())
+    else {
+        return false;
+    };
+    std::iter::once(root)
+        .chain(baseline)
+        .any(|root| root.canonicalize().is_ok_and(|root| key.starts_with(root)))
 }
 
 fn capture(

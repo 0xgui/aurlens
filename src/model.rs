@@ -92,14 +92,37 @@ pub struct Change {
     pub after: Option<String>,
 }
 
+#[derive(Clone, Debug)]
+pub enum AiConfig {
+    Http(HttpConfig),
+    Codex(CodexConfig),
+}
+
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct AiConfig {
+pub struct HttpConfig {
     pub endpoint: String,
     pub model: String,
     pub api_key_env: Option<String>,
+    pub api_key_file: Option<std::path::PathBuf>,
     #[serde(default)]
     pub allow_loopback_http: bool,
+    #[serde(default)]
+    pub send_source: bool,
+    #[serde(default = "default_timeout")]
+    pub timeout_seconds: u64,
+    #[serde(default = "default_request_bytes")]
+    pub max_request_bytes: usize,
+    #[serde(default = "default_response_bytes")]
+    pub max_response_bytes: usize,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CodexConfig {
+    pub executable: std::path::PathBuf,
+    #[serde(default)]
+    pub model: String,
     #[serde(default)]
     pub send_source: bool,
     #[serde(default = "default_timeout")]

@@ -4,6 +4,8 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+mod setup;
+
 #[derive(Parser)]
 #[command(
     version,
@@ -16,15 +18,20 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Connect Codex, an API provider, or a local model once.
+    Setup,
     /// Review a local package directory containing PKGBUILD.
     Scan {
         path: PathBuf,
         /// Compare against a previous local checkout.
         #[arg(long)]
         baseline: Option<PathBuf>,
-        /// Enable AI using an explicit trusted TOML file outside the checkout.
+        /// Use a trusted TOML file instead of your saved AI connection.
         #[arg(long)]
         config: Option<PathBuf>,
+        /// Run static checks without your saved AI connection.
+        #[arg(long, conflicts_with = "config")]
+        no_ai: bool,
         /// Emit the versioned machine-readable report.
         #[arg(long)]
         json: bool,
@@ -42,12 +49,20 @@ enum Commands {
 
 fn main() -> ExitCode {
     match Cli::parse().command {
+        Commands::Setup => match setup::run() {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("AURLens setup: {error}");
+                ExitCode::from(3)
+            }
+        },
         Commands::Scan {
             path,
             baseline,
             config,
+            no_ai,
             json,
-        } => scan(path, baseline, config, json),
+        } => scan(path, baseline, config, no_ai, json),
         Commands::Verify {
             path,
             snapshot_digest,
@@ -56,7 +71,28 @@ fn main() -> ExitCode {
     }
 }
 
-fn scan(path: PathBuf, baseline: Option<PathBuf>, config: Option<PathBuf>, json: bool) -> ExitCode {
+fn scan(
+    path: PathBuf,
+    baseline: Option<PathBuf>,
+    config: Option<PathBuf>,
+    no_ai: bool,
+    json: bool,
+) -> ExitCode {
+    let config = if no_ai {
+        None
+    } else if config.is_some() {
+        config
+    } else {
+        let default = match setup::config_path() {
+            Ok(path) => path,
+            Err(_) => return config_error("user_config_directory", json),
+        };
+        match default.try_exists() {
+            Ok(true) => Some(default),
+            Ok(false) => None,
+            Err(_) => return config_error("user_config_read", json),
+        }
+    };
     let ai = match config {
         Some(config) => {
             if inside_checkout(&config, &path)
@@ -67,7 +103,19 @@ fn scan(path: PathBuf, baseline: Option<PathBuf>, config: Option<PathBuf>, json:
                 return config_error("config_inside_checkout", json);
             }
             match load_config(&config) {
-                Ok(config) => Some(config),
+                Ok(config) => {
+                    if let aurlens::AiConfig::Http(http) = &config {
+                        if http.api_key_file.as_ref().is_some_and(|key| {
+                            inside_checkout(key, &path)
+                                || baseline
+                                    .as_ref()
+                                    .is_some_and(|base| inside_checkout(key, base))
+                        }) {
+                            return config_error("credentials_inside_checkout", json);
+                        }
+                    }
+                    Some(config)
+                }
                 Err(error) => return config_error(error.code, json),
             }
         }

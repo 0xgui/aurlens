@@ -57,6 +57,8 @@ Require all eight mapped journeys in `summary.json`, `passed = true`, and `scrat
 
 Also require five snapshot journeys in `verification/summary.json`, `passed = true`, and `scratch_removed = true`. These use the same release executable. Their action and stdout files prove unchanged, changed, unsupported, text, and blocked-but-matching behavior. A passing scan summary alone does not cover the `verify` command.
 
+Require the setup suite in `setup.log` to pass against the release executable too. It drives interactive local-model setup through stdin, tests the connection, checks private file modes, scans with the saved connection, and exercises `--no-ai`. It also proves cancelled or failed setup preserves previous settings. Test subprocesses use isolated user configuration directories. Codex subprocess fixtures run in the normal Rust suite; a real authenticated Codex connection requires a separate explicit smoke test with an inert recipe and private settings outside the repository.
+
 The harness checks that inert recipe text never creates its marker, an external symlink's sentinel never enters output, blocking findings survive a clean AI reply, invalid AI evidence fails, and changed source prevents completion. Reports are about local text only. Local CLI fixtures do not evaluate real-model accuracy, cloud TLS behavior, upstream-source analysis, or the native Shelly adapter.
 
 ## Cleanup
