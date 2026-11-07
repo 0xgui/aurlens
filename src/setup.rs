@@ -1,10 +1,19 @@
 use aurlens::{AiResult, ReviewOptions, load_config, review};
-use rustix::termios::{LocalModes, OptionalActions, Termios, tcgetattr, tcsetattr};
+use rustix::event::{PollFd, PollFlags, Timespec, poll};
+use rustix::termios::{
+    LocalModes, OptionalActions, SpecialCodeIndex, Termios, tcgetattr, tcsetattr,
+};
+use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM};
+use signal_hook::iterator::Signals;
 use std::fs;
 use std::io::{self, Write};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 
 pub fn config_path() -> Result<PathBuf, &'static str> {
     let base = match std::env::var_os("XDG_CONFIG_HOME").filter(|value| !value.is_empty()) {
@@ -201,27 +210,87 @@ fn prompt(label: &str, default: Option<&str>) -> Result<String, String> {
     Ok(value.into())
 }
 
-struct EchoGuard(Termios);
+struct EchoGuard {
+    terminal: Termios,
+    default_signals: Arc<AtomicBool>,
+}
 impl Drop for EchoGuard {
     fn drop(&mut self) {
-        let _ = tcsetattr(io::stdin(), OptionalActions::Now, &self.0);
+        let _ = tcsetattr(io::stdin(), OptionalActions::Flush, &self.terminal);
+        self.default_signals.store(true, Ordering::SeqCst);
     }
 }
 
 fn secret() -> Result<String, String> {
+    let default_signals = Arc::new(AtomicBool::new(true));
+    for signal in [SIGINT, SIGTERM, SIGHUP] {
+        signal_hook::flag::register_conditional_default(signal, default_signals.clone())
+            .map_err(|_| "Could not prepare safe API key entry.")?;
+    }
+    let mut signals = Signals::new([SIGINT, SIGTERM, SIGHUP])
+        .map_err(|_| "Could not prepare safe API key entry.")?;
     let original = tcgetattr(io::stdin())
         .map_err(|_| "Enter API keys in an interactive terminal. They are never accepted as command arguments.")?;
     let mut hidden = original.clone();
     hidden
         .local_modes
-        .remove(LocalModes::ECHO | LocalModes::ECHONL);
+        .remove(LocalModes::ECHO | LocalModes::ECHONL | LocalModes::ICANON | LocalModes::ISIG);
+    hidden.special_codes[SpecialCodeIndex::VMIN] = 0;
+    hidden.special_codes[SpecialCodeIndex::VTIME] = 0;
+    let guard = EchoGuard {
+        terminal: original,
+        default_signals: default_signals.clone(),
+    };
+    default_signals.store(false, Ordering::SeqCst);
     tcsetattr(io::stdin(), OptionalActions::Now, &hidden)
         .map_err(|_| "Could not hide API key input.")?;
-    let guard = EchoGuard(original);
-    let result = prompt("API key (hidden; Enter for none)", Some(""));
+    print!("API key (hidden; Enter for none): ");
+    io::stdout()
+        .flush()
+        .map_err(|_| "Could not write the setup prompt.")?;
+    let result = read_secret(&mut signals);
     drop(guard);
     println!();
     result
+}
+
+fn read_secret(signals: &mut Signals) -> Result<String, String> {
+    let input = io::stdin();
+    let mut descriptors = [PollFd::new(&input, PollFlags::IN)];
+    let timeout = Timespec {
+        tv_sec: 0,
+        tv_nsec: 100_000_000,
+    };
+    let mut bytes = Vec::new();
+    loop {
+        if signals.pending().next().is_some() {
+            return Err("Setup cancelled; saved connection kept.".into());
+        }
+        match poll(&mut descriptors, Some(&timeout)) {
+            Ok(0) | Err(rustix::io::Errno::INTR) => continue,
+            Err(_) => return Err("Could not read API key input.".into()),
+            Ok(_) => {}
+        }
+        let mut byte = [0];
+        match rustix::io::read(&input, &mut byte) {
+            Ok(0) => return Err("API key input ended; saved connection kept.".into()),
+            Err(rustix::io::Errno::INTR) => continue,
+            Err(_) => return Err("Could not read API key input.".into()),
+            Ok(_) => {}
+        }
+        match byte[0] {
+            b'\n' | b'\r' => {
+                return String::from_utf8(bytes).map_err(|_| "API key must be UTF-8.".into());
+            }
+            3 | 4 => return Err("Setup cancelled; saved connection kept.".into()),
+            8 | 127 => {
+                bytes.pop();
+            }
+            0..=31 => return Err("API key contains an invalid character.".into()),
+            value if bytes.len() < 4096 => bytes.push(value),
+            _ => return Err("API key is too long.".into()),
+        }
+    }
 }
 
 fn find_codex() -> Option<PathBuf> {

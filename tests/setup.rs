@@ -228,3 +228,22 @@ print(json.dumps({'type':'turn.completed'}))
     assert_eq!(report["ai"]["model"], "codex-default");
     assert!(!package.path().join("must-not-exist").exists());
 }
+
+#[test]
+fn interrupted_key_entry_restores_terminal_and_preserves_saved_settings() {
+    let binary = std::env::var_os("AURLENS_VERIFY_BIN")
+        .unwrap_or_else(|| env!("CARGO_BIN_EXE_aurlens").into());
+    let output = Command::new("python3")
+        .arg(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/setup_terminal.py"
+        ))
+        .arg(binary)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
