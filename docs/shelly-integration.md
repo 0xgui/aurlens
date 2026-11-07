@@ -12,6 +12,8 @@ After acceptance, the operation-local approval stores AURLens's digest separatel
 
 The manager gates precede native, child-command, makepkg, chroot, and isolated build dispatch. Each AUR dependency entering this manager gets its own review. Controlled PKGBUILD version edits invalidate the external binding. No external approval is inherited across changed recipe bytes.
 
+In-process metadata and native builds use a shared output owner. Work, source-cache, package, and log paths sit outside the reviewed recipe. Dependency metadata is checked again before it returns. Native builds verify the complete recipe again before returning archives for installation. Undeclared recipe writes therefore fail these return boundaries.
+
 The patch does not cover standalone `shelly build`, official repository package hooks, remote downloads, or commands that bypass this AUR manager. It does not supply an old checkout for `--baseline`. GUI rendering and preservation of configuration across privilege elevation remain unverified.
 
 ## Development configuration
@@ -36,7 +38,7 @@ ZIG=/absolute/path/to/zig integrations/shelly/verify.sh \
 
 The evidence directory must not exist. The driver checks the original hashes of the patched files, copies the source into a private directory, applies the patch, and adds the adapter module. It runs the protocol tests, the focused `aurlens-test` target, and Shelly's broader `aur-test` target with the real AURLens binary. Pinned Zig dependencies may require network access on the first run. Existing upstream signing tests require local GPG-agent sockets.
 
-The focused tests check complete scan and verification responses, status disagreement, unsupported coverage, requested AI completeness, changed helpers on cached approvals, all five build dispatch choices, independent dependency review, blocked and binary inputs before metadata evaluation, and manual finding presentation and rejection. Dependency discovery itself is not an end-to-end install test. A failure at the gate must occur before the test evaluator can run.
+The focused tests check complete scan and verification responses, status disagreement, unsupported coverage, requested AI completeness, changed helpers on cached approvals, all five build dispatch choices, independent dependency review, blocked and binary inputs before metadata evaluation, and manual finding presentation and rejection. They also run repeated real in-process metadata and native prepare, build, check, and package functions, then inspect archive contents and metadata. A non-Git local recipe exercises its actual constructor and repeated metadata path. Source mutations, configured destination aliases, failure, cancellation, and cleanup are checked. Dependency discovery itself is not an end-to-end install test.
 
 Upstream fixtures build packages in private directories. They do not install those packages into the system. The driver retains logs and executable hashes, removes its copied source, and writes `summary.json` only after all checks pass. It never replaces the installed Shelly.
 
@@ -44,6 +46,10 @@ Upstream fixtures build packages in private directories. They do not install tho
 
 Whole-checkout coverage includes hidden and untracked helpers, empty directories, modes, `src`, and `pkg`. Binary outputs, links, unsupported text, and exceeded limits cause an incomplete review. The adapter neither hides generated files nor deletes them to get a passing scan.
 
-Shelly can modify its checkout during metadata or build preparation. Later checks can therefore refuse a legitimate operation. A fresh recipe workspace separated from generated outputs is required before this patch is suitable for daily installs and updates.
+For reviewed in-process operations, default generated files live under `<cache_root>/.reviewed-outputs/<package>-<random>/`. Each prepared package owns this allocation, and each metadata or build call gets a fresh work directory. Archives survive until their install consumer finishes. Destroying the prepared package removes its owned output tree. Explicit configured package and log destinations remain untouched. Configured destinations equal to, inside, or containing the recipe, including symlink aliases, are rejected before creation.
+
+Abrupt process termination can leave owned scratch directories. The patch does not yet provide crash-recovery cleanup. Existing dirty recipe caches still fail review; they are never cleaned or excluded automatically.
+
+Moving outputs is currently wired only through in-process metadata and native builds. Command, makepkg, chroot, and isolated builders still need destination propagation and successful-build verification. Controlled `pkgver` changes still need a complete re-review workflow. These gaps prevent this patch from being suitable for daily installs and updates across all modes.
 
 A process-external digest check also leaves a race before later filesystem reads. It does not freeze the checkout against a concurrent writer. Immutable execution inputs or operating-system isolation are needed for that stronger guarantee.

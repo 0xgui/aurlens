@@ -14,6 +14,8 @@ Run `ZIG=/absolute/path/to/zig integrations/shelly/verify.sh SOURCE BINARY NEW_E
 
 Native fixtures call the real scanner, reject changed helpers on cached approvals before five build dispatch choices, scan a dependency separately, stop blocked or binary helper inputs before metadata evaluation, and present manual findings to an approval handler. Protocol tests reject disagreement, unsupported coverage, and missing requested AI completion.
 
+The successful lifecycle fixture performs repeated in-process metadata and complete native builds with real prepare, build, check, and package functions. It inspects exact payload and `.PKGINFO` contents with `bsdtar`, verifies the original recipe afterward, and checks artifact lifetime through cleanup. A real non-Git local constructor exercises repeated metadata with generated `srcdir` data. Metadata and prepare functions that write an undeclared recipe helper must fail before returning metadata or archives. Failure and cancellation clean owned scratch; configured package and log outputs survive.
+
 ## Gotchas
 
-This is an isolated source-copy proof. It does not prove GUI rendering, privilege-elevation configuration preservation, an end-to-end recursive install, clean workspace operation through a complete real build, or compatibility with another Shelly release. Dependency downloads and GPG-agent sockets may require environment approval. Dirty caches can stop legitimate operations. Keep ordinary Shelly use and updates unchanged.
+This is an isolated source-copy proof. It does not prove GUI rendering, privilege-elevation configuration preservation, an end-to-end recursive install, successful command or external build modes, changed `pkgver` workflows, or compatibility with another Shelly release. Dependency downloads and GPG-agent sockets may require environment approval. Dirty preexisting recipe caches still fail; they are never hidden from review. Keep ordinary stock Shelly use and updates unchanged.

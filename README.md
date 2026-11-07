@@ -55,7 +55,7 @@ A match means the supported contents and modes match the supplied digest. Check 
 
 ## Read the result
 
-The text report separates deterministic findings from AI analysis. `--json` returns schema version 1 with file hashes, a snapshot digest, coverage, findings, change metadata, AI status, and the final decision. JSON reports contain source excerpts used as evidence, but not complete source files or API keys.
+The text report separates deterministic findings from AI analysis. `--json` returns schema version 1 with file hashes, a snapshot digest, coverage, findings, change metadata, AI status, and the final decision. Reports contain source excerpts used as evidence. They do not include configured authentication headers, but source excerpts can contain sensitive material. Keep reports private. See [the sensitive-information policy](SECURITY.md).
 
 | Exit code | Decision | Meaning |
 | --- | --- | --- |
