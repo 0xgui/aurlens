@@ -1,0 +1,2 @@
+163dbefbb24bce8112de6553c5b4a2d6b0ab92c67beb98ea19cb15b3eff15f31  Shelly.PackageManager/src/aur/manager.zig
+77ed27f77dda0ab4db37c7ce86cd7024a1705ad0ce40addc8cf712548ee74934  Shelly.PackageManager/build.zig

@@ -1,0 +1,5 @@
+The patch modifies Seafoam-Labs/Shelly-ALPM version 3.2.0.
+Upstream source: https://github.com/Seafoam-Labs/Shelly-ALPM/tree/v3.2.0
+shelly-3.2.0.patch is distributed under the GNU General Public License version 3.
+The upstream license text is reproduced in COPYING.Shelly.
+The standalone aurlens.zig protocol adapter and other original AURLens files use this repository's MIT license.

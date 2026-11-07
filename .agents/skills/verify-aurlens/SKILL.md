@@ -5,11 +5,11 @@ description: Verify AURLens CLI behavior after scanner, AI-client, report, or co
 
 # Verify AURLens
 
-Use the real CLI and the [feature map](features/README.md). AURLens is a short-lived Linux CLI, with a library as a secondary interface. It does not yet intercept Shelly or build packages.
+Use the real CLI and the [feature map](features/README.md). AURLens is a short-lived Linux CLI, with a library as a secondary interface. The experimental Shelly patch has a separate [native verification route](features/shelly-adapter.md). Stock Shelly remains unchanged.
 
 ## Launch
 
-Run from the repository root with Rust stable, Bash, jq, and sha256sum available. The source `Cargo.lock` must exist. For this workspace, when `cargo` is absent from PATH, set:
+Run from the repository root with Rust stable, Bash, Python 3, jq, and sha256sum available. The source `Cargo.lock` must exist. For this workspace, when `cargo` is absent from PATH, set:
 
 ```sh
 export CARGO_HOME="$HOME/.cache/aurlens-toolchain/cargo"
@@ -29,7 +29,7 @@ Run the read-only check first when a journey behaves unexpectedly:
 .agents/skills/verify-aurlens/scripts/verify.sh doctor
 ```
 
-It verifies the Cargo package version against the release binary, checks CLI help, and records binary and lockfile hashes. Missing or mismatched builds fail. Build again before proceeding.
+It verifies the Cargo package version against the release binary, checks scan and verification help, and records binary and lockfile hashes. Missing or mismatched builds fail. Build again before proceeding.
 
 ## Drive
 
@@ -55,7 +55,9 @@ Each journey saves its action arguments and exit code, stdout, and stderr. The `
 
 Require all eight mapped journeys in `summary.json`, `passed = true`, and `scratch_removed = true`. Inspect the corresponding action and output artifacts for the feature under review. Source hashes and reported AI status must match the exercised path. A test count or successful compile alone does not prove CLI behavior.
 
-The harness checks that inert recipe text never creates its marker, an external symlink's sentinel never enters output, blocking findings survive a clean AI reply, invalid AI evidence fails, and changed source prevents completion. Reports are about local text only. Local fixtures do not evaluate real-model accuracy, cloud TLS behavior, upstream-source analysis, or future Shelly integration.
+Also require five snapshot journeys in `verification/summary.json`, `passed = true`, and `scratch_removed = true`. These use the same release executable. Their action and stdout files prove unchanged, changed, unsupported, text, and blocked-but-matching behavior. A passing scan summary alone does not cover the `verify` command.
+
+The harness checks that inert recipe text never creates its marker, an external symlink's sentinel never enters output, blocking findings survive a clean AI reply, invalid AI evidence fails, and changed source prevents completion. Reports are about local text only. Local CLI fixtures do not evaluate real-model accuracy, cloud TLS behavior, upstream-source analysis, or the native Shelly adapter.
 
 ## Cleanup
 
