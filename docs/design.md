@@ -20,6 +20,8 @@ Two integration shapes were compared. A filesystem gate reuses Rust's existing n
 
 The filesystem gate was selected for the experiment because it needs no second traversal implementation or cross-language hash algorithm. The owned-input comparison contributed explicit metadata-evaluation enforcement and invalidation after controlled version edits. Both shapes still need a stable execution workspace. Whole-checkout coverage deliberately refuses dirty caches rather than silently omitting build outputs.
 
+The native lifecycle now separates generated outputs from the reviewed checkout through a per-prepared-package `ReviewedOutputs` owner. Metadata and builds share that policy. Default outputs are temporary until installation consumes the archives; configured final package and log directories persist. Canonical destination checks reject aliases into the recipe. This fixes repeated in-process metadata and complete native builds without weakening the input inventory. Other execution modes and controlled version updates still need the same verified lifecycle.
+
 Two native Codex directional candidates informed this integration design. Claude and Grok lanes could not start because their launcher required Bun. No cross-provider judge ran. This is a review limitation, not evidence of multi-provider agreement.
 
 Normal Shelly use and package updates are a delivery constraint. The development patch proves an interface in an isolated copy. It is not a distribution strategy for a maintained Shelly fork. The production path needs a supported native hook and a recipe workspace separated from build outputs.

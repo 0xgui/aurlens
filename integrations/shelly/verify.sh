@@ -23,10 +23,10 @@ tar -C "$scratch/source" -xf "$scratch/source.tar"
 cd -- "$scratch/source"
 git apply --check "$integration_dir/shelly-3.2.0.patch"
 git apply "$integration_dir/shelly-3.2.0.patch"
-cp -- "$integration_dir/aurlens.zig" Shelly.PackageManager/src/aur/aurlens.zig
-"$zig_bin" fmt --check Shelly.PackageManager/src/aur/aurlens.zig Shelly.PackageManager/src/aur/manager.zig Shelly.PackageManager/build.zig
+cp -- "$integration_dir/aurlens.zig" "$integration_dir/reviewed_outputs.zig" Shelly.PackageManager/src/aur/
+"$zig_bin" fmt --check Shelly.PackageManager/src/aur/aurlens.zig Shelly.PackageManager/src/aur/reviewed_outputs.zig Shelly.PackageManager/src/aur/manager.zig Shelly.PackageManager/build.zig
 "$zig_bin" test Shelly.PackageManager/src/aur/aurlens.zig > "$evidence/protocol.log" 2>&1
-sha256sum "$binary" "$integration_dir/shelly-3.2.0.patch" "$integration_dir/aurlens.zig" > "$evidence/artifacts.sha256"
+sha256sum "$binary" "$integration_dir/shelly-3.2.0.patch" "$integration_dir/aurlens.zig" "$integration_dir/reviewed_outputs.zig" > "$evidence/artifacts.sha256"
 cd Shelly.PackageManager
 AURLENS_TEST_BIN="$binary" "$zig_bin" build aurlens-test -Dlibalpm=true --summary all > "$evidence/gates.log" 2>&1
 AURLENS_TEST_BIN="$binary" "$zig_bin" build aur-test -Dlibalpm=true --summary all > "$evidence/native.log" 2>&1
