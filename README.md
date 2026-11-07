@@ -29,15 +29,22 @@ Both paths must contain a regular `PKGBUILD`. Directory symlinks, including syml
 
 ## Enable AI review
 
-AURLens supports a configurable Chat Completions compatible HTTP endpoint. Use a local model server or an HTTPS cloud provider that implements the documented response protocol. You select the endpoint and model; AURLens does not discover a provider or send requests by default.
-
-Copy `examples/ai.toml` to a trusted location outside the package checkout. Set `endpoint` to the full completion URL and `model` to your server's model name. Set `send_source = true` to opt in to sending the reviewed package text to that endpoint.
-
 ```sh
-./target/release/aurlens scan /path/to/package --config /path/to/trusted/ai.toml
+./target/release/aurlens setup
+./target/release/aurlens scan /path/to/package
 ```
 
-For a cloud provider, use HTTPS and name an environment variable containing its API key with `api_key_env`. Do not put the key itself in the configuration or command line. Plain HTTP requires `allow_loopback_http = true` and a numeric loopback address. Model servers must support JSON output; incompatible or ungrounded responses make the review incomplete.
+Choose one connection:
+
+- **Codex:** install the Codex CLI. Setup reuses its login or opens its login flow. AURLens uses the CLI's default model.
+- **API provider:** enter a Chat Completions compatible HTTPS endpoint, model name, and API key. Key entry is hidden.
+- **Local model:** enter the server's full Chat Completions endpoint and model name. The default endpoint is `http://127.0.0.1:11434/v1/chat/completions`.
+
+Setup asks before sending package text and tests the connection with an inert recipe. It saves settings in `$XDG_CONFIG_HOME/aurlens/config.toml`, or `~/.config/aurlens/config.toml`. Credentials are stored separately in private files in that directory. Configuration files have mode `0600`; the directory has mode `0700`. Failed setup preserves the previous connection. Keep this directory outside Git repositories and package checkouts.
+
+Subsequent scans use the saved connection automatically. Run setup again to change it. Use `scan PATH --no-ai` for static checks alone, or `--config /path/to/trusted/ai.toml` for an explicit connection. Without saved or explicit settings, scans run static checks alone. AURLens never discovers settings from a package checkout.
+
+Codex reviews run through a restricted CLI profile with shell execution disabled. API and local model servers must support JSON output. Unsupported CLI versions, incompatible responses, and unavailable models make the review incomplete. For manual configuration and backend limits, see [the AI protocol](docs/ai-protocol.md).
 
 The model receives the current package text, relative file names, hashes, and a baseline change summary when requested. Baseline file bodies are not sent. Model responses are untrusted. Each AI finding must cite a real file, line, and matching excerpt. AI can add findings but cannot clear deterministic findings. See [the AI protocol](docs/ai-protocol.md).
 

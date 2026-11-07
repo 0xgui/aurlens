@@ -15,10 +15,12 @@ fn package(source: &str) -> TempDir {
 }
 
 fn cli(path: &Path, extra: &[&str]) -> Output {
+    let user_config = tempdir().unwrap();
     Command::new(
         std::env::var_os("AURLENS_VERIFY_BIN")
             .unwrap_or_else(|| env!("CARGO_BIN_EXE_aurlens").into()),
     )
+    .env("XDG_CONFIG_HOME", user_config.path())
     .arg("scan")
     .arg(path)
     .arg("--json")
@@ -45,6 +47,7 @@ fn user_journey_evidence() {
     let binary = std::env::var_os("AURLENS_VERIFY_BIN")
         .unwrap_or_else(|| env!("CARGO_BIN_EXE_aurlens").into());
     let text_output = Command::new(&binary)
+        .env("XDG_CONFIG_HOME", scratch.path().join("user-config"))
         .arg("scan")
         .arg(&root)
         .output()
@@ -479,7 +482,6 @@ fn credentials_inside_current_or_baseline_are_never_disclosed() {
         let key = root.join("private-key");
         fs::write(&key, "private-fixture-key").unwrap();
         fs::set_permissions(&key, fs::Permissions::from_mode(0o600)).unwrap();
-        // An unreachable endpoint distinguishes pre-dispatch rejection from transport.
         let report = review(
             current.path(),
             &ReviewOptions {

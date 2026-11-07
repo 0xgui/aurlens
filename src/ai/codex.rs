@@ -9,7 +9,6 @@ use std::os::unix::process::CommandExt;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-// Ignore ambient configuration, then restrict the supported exec profile explicitly.
 // Model metadata may still register utility tools (such as apply_patch); shell_tool
 // disables the entire execution-tool registration path. Any tool activity fails.
 const OVERRIDES: &[&str] = &[
@@ -27,9 +26,7 @@ const OVERRIDES: &[&str] = &[
     "features.tool_suggest=false",
     "features.tool_search=false",
     "features.computer_use=false",
-    "features.memory_tool=false",
     "features.external_agent_memory_import=false",
-    "features.connectors=false",
     "features.skill_search=false",
     "features.skill_mcp_dependency_install=false",
     "features.skill_env_var_dependency_prompt=false",
@@ -42,7 +39,6 @@ const OVERRIDES: &[&str] = &[
     "features.plugins=false",
     "features.plugin_hooks=false",
     "features.hooks=false",
-    "features.codex_hooks=false",
     "features.apps=false",
     "features.enable_mcp_apps=false",
     "features.apps_early_resource_discovery=false",
@@ -55,13 +51,12 @@ const OVERRIDES: &[&str] = &[
     "features.browser_use_external=false",
     "features.in_app_browser=false",
     "features.standalone_web_search=false",
-    "features.web_search=false",
-    "features.web_search_cached=false",
-    "features.web_search_request=false",
     "features.image_generation=false",
     "features.code_mode=false",
+    "features.code_mode_only=false",
     "features.js_repl=false",
-    "features.request_permissions=false",
+    "features.exec_permission_approvals=false",
+    "suppress_unstable_features_warning=true",
     "agents.enabled=false",
     "plugins._default.enabled=false",
     "apps._default.enabled=false",
@@ -77,6 +72,10 @@ const OVERRIDES: &[&str] = &[
     "project_doc_fallback_filenames=[]",
     "approval_policy=\"never\"",
 ];
+
+// Codex 0.167 emits this diagnostic even when code_mode is explicitly false.
+// It confirms the execution host is disabled; other errors remain failures.
+const DISABLED_CODE_MODE: &str = "Code Mode is unavailable because code-mode host is disabled. Code mode will fail closed; enable `features.code_mode_host` and install `codex-code-mode-host`.";
 
 fn schema() -> Value {
     let evidence = json!({"type":"object","additionalProperties":false,
@@ -196,8 +195,6 @@ pub(super) fn review(source: &Value, config: &CodexConfig) -> Result<Vec<u8>, Ai
         command.arg("-c").arg(value);
     }
     command.arg("-").current_dir(cwd).env_clear();
-    // Preserve supported login lookup and ordinary runtime/network settings only.
-    // Never read auth material or inherit provider endpoint/configuration overrides.
     for name in [
         "HOME",
         "USER",
@@ -320,6 +317,16 @@ fn final_response(bytes: &[u8], limit: usize) -> Result<Vec<u8>, AiError> {
                 let item = event.get("item").ok_or_else(invalid)?;
                 match item.get("type").and_then(Value::as_str) {
                     Some("reasoning") => {}
+                    Some("error")
+                        if event["type"] == "item.completed"
+                            && item.get("message").and_then(Value::as_str)
+                                == Some(DISABLED_CODE_MODE) => {}
+                    Some("error") => {
+                        return Err(error(
+                            "ai_codex_diagnostic",
+                            "Codex reported an error. Check Codex login or run aurlens setup.",
+                        ));
+                    }
                     Some("agent_message") if event["type"] == "item.completed" => {
                         let text = item
                             .get("text")
@@ -431,6 +438,22 @@ sys.stdout.write({output:?})
         ));
         cfg.model.clear();
         assert_eq!(review(&json!({}), &cfg).unwrap(), b"{}");
+    }
+
+    #[test]
+    fn disabled_host_notice_is_accepted_but_other_errors_and_tools_fail() {
+        let notice =
+            json!({"type":"item.completed","item":{"type":"error","message":DISABLED_CODE_MODE}})
+                .to_string();
+        let valid = events("{}");
+        assert_eq!(
+            final_response(format!("{notice}\n{valid}").as_bytes(), 4096).unwrap(),
+            b"{}"
+        );
+        let other = notice.replace(DISABLED_CODE_MODE, "Unknown startup failure");
+        assert!(final_response(format!("{other}\n{valid}").as_bytes(), 4096).is_err());
+        let tool = json!({"type":"item.completed","item":{"type":"command_execution","command":"touch marker"}});
+        assert!(final_response(format!("{notice}\n{tool}\n{valid}").as_bytes(), 4096).is_err());
     }
 
     #[test]

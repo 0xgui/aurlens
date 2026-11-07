@@ -21,6 +21,7 @@ doctor() {
     [[ "$actual_version" == "aurlens $expected_version" ]]
     printf '%s\n' "$actual_version"
     "$binary" scan --help
+    "$binary" setup --help
     "$binary" verify --help
     sha256sum "$binary" Cargo.lock
     git status --short
@@ -50,7 +51,10 @@ case "${1:-run}" in
         python3 .agents/skills/verify-aurlens/scripts/verify-snapshot.py "$binary" "$evidence/verification"
         jq -e '.passed == true and .scratch_removed == true and (.journeys | length) == 5' \
             "$evidence/verification/summary.json" > /dev/null
-        printf 'All eight scan journeys and five snapshot journeys passed.\n'
+        AURLENS_VERIFY_BIN="$binary" \
+            "$cargo_bin" test "${cargo_flags[@]}" --test setup \
+            > "$evidence/setup.log" 2>&1
+        printf 'Scan, snapshot, and saved-connection setup journeys passed.\n'
         ;;
     *)
         printf 'Usage: %s doctor | run [new-evidence-directory]\n' "$0" >&2
