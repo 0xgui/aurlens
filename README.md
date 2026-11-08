@@ -8,7 +8,7 @@ This is an early Rust prototype for Linux. An [experimental Shelly 3.2.0 patch](
 
 ## Run a review
 
-Install a current stable Rust toolchain, then build the project:
+For installation instructions, see [Install AURLens](docs/install.md). To build and try the source checkout with a current stable Rust toolchain:
 
 ```sh
 cargo build --locked --release
