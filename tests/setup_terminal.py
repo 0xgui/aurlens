@@ -1,3 +1,5 @@
+import array
+import fcntl
 import os
 from pathlib import Path
 import pty
@@ -44,7 +46,7 @@ for interruption in (None, signal.SIGINT, signal.SIGTERM, signal.SIGHUP, "after_
             os.write(master, b"fixture-model\n")
             until(b"API key (hidden; Enter for none)")
             assert not termios.tcgetattr(slave)[3] & termios.ECHO
-            if interruption == signal.SIGINT:
+            if interruption in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
                 os.kill(child.pid, signal.SIGSTOP)
                 os.waitpid(child.pid, os.WUNTRACED)
             if interruption == "after_entry":
@@ -57,8 +59,16 @@ for interruption in (None, signal.SIGINT, signal.SIGTERM, signal.SIGHUP, "after_
                 os.write(master, b"\x03")
             else:
                 os.write(master, b"fixture-entry-value")
+                deadline = time.monotonic() + 2
+                while True:
+                    queued = array.array("i", [0])
+                    fcntl.ioctl(slave, termios.FIONREAD, queued, True)
+                    if queued[0] == len(b"fixture-entry-value"):
+                        break
+                    assert time.monotonic() < deadline, "PTY input did not arrive"
+                    time.sleep(0.001)
                 os.kill(child.pid, interruption)
-                if interruption == signal.SIGINT:
+                if interruption in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
                     os.kill(child.pid, signal.SIGCONT)
             stdout, stderr = child.communicate(timeout=10)
             expected = -signal.SIGINT if interruption == "after_entry" else 3

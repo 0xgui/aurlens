@@ -75,12 +75,7 @@ pub const ReviewedOutputs = struct {
     }
 };
 
-pub const Resolved = struct {
-    work: []u8,
-    packages: []const u8,
-    sources: []const u8,
-    logs: []const u8,
-};
+pub const Resolved = @import("build_destinations.zig").Resolved;
 
 fn child(allocator: std.mem.Allocator, io: std.Io, base: []const u8, operation_name: []const u8, use_default: bool, name: []const u8) ![]u8 {
     const canonical = try canonicalDestination(allocator, io, base);
