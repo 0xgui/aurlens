@@ -63,7 +63,7 @@ jobs:
             existing="$RUNNER_TEMP/aurlens-existing-release"
             mkdir "$existing"
             gh release download "$RELEASE_TAG" --dir "$existing"
-            diff --recursive --quiet dist "$existing"
+            diff --recursive --brief dist "$existing"
           else
             gh release create "$RELEASE_TAG" dist/* --verify-tag --draft --title "AURLens $RELEASE_TAG" --generate-notes
           fi
