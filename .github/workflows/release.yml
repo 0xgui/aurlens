@@ -1,0 +1,62 @@
+name: Release packages
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/release.yml
+      - scripts/package-release.sh
+      - scripts/verify-release.py
+      - docs/install.md
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: rustup toolchain install stable --profile minimal
+      - name: Build and test
+        run: |
+          cargo +stable test --locked
+          cargo +stable build --locked --release --target x86_64-unknown-linux-gnu
+      - name: Package the reviewed source and binary
+        env:
+          RUSTUP_TOOLCHAIN: stable
+        run: |
+          scripts/package-release.sh target/x86_64-unknown-linux-gnu/release/aurlens x86_64-unknown-linux-gnu "$RUNNER_TEMP/dist"
+          python3 scripts/verify-release.py "$RUNNER_TEMP/dist"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: aurlens-release-packages
+          path: ${{ runner.temp }}/dist/*
+          if-no-files-found: error
+
+  draft:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: package
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: aurlens-release-packages
+          path: dist
+      - name: Create a draft for final review
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f "dist/aurlens-$RELEASE_TAG-source.tar.gz"
+          (cd dist && sha256sum --check --strict SHA256SUMS)
+          gh release create "$RELEASE_TAG" dist/* --verify-tag --draft --title "AURLens $RELEASE_TAG" --generate-notes
