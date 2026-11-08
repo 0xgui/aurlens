@@ -19,7 +19,11 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     /// Connect Codex, an API provider, or a local model once.
-    Setup,
+    Setup {
+        /// Disable the optional Shelly hook while keeping your AI connection.
+        #[arg(long)]
+        disable_shelly: bool,
+    },
     /// Review a local package directory containing PKGBUILD.
     Scan {
         path: PathBuf,
@@ -49,7 +53,11 @@ enum Commands {
 
 fn main() -> ExitCode {
     match Cli::parse().command {
-        Commands::Setup => match setup::run() {
+        Commands::Setup { disable_shelly } => match if disable_shelly {
+            setup::disable_shelly()
+        } else {
+            setup::run()
+        } {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => {
                 eprintln!("AURLens setup: {error}");

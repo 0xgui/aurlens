@@ -227,6 +227,37 @@ print(json.dumps({'type':'turn.completed'}))
     assert_eq!(report["ai"]["state"], "complete");
     assert_eq!(report["ai"]["model"], "codex-default");
     assert!(!package.path().join("must-not-exist").exists());
+
+    let config = home.path().join("config/aurlens/config.toml");
+    let saved: toml::Table = toml::from_str(&fs::read_to_string(&config).unwrap()).unwrap();
+    assert_eq!(saved["shelly"]["schema_version"].as_integer(), Some(1));
+    assert_eq!(saved["shelly"]["enabled"].as_bool(), Some(true));
+    assert!(std::path::Path::new(saved["shelly"]["executable"].as_str().unwrap()).is_absolute());
+    for _ in 0..2 {
+        let output = command(&home)
+            .args(["setup", "--disable-shelly"])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let disabled: toml::Table = toml::from_str(&fs::read_to_string(&config).unwrap()).unwrap();
+        assert_eq!(disabled["shelly"]["enabled"].as_bool(), Some(false));
+        assert_eq!(disabled["ai"], saved["ai"]);
+        assert_eq!(
+            fs::metadata(&config).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+    let output = command(&home)
+        .args(["scan", package.path().to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["ai"]["state"], "complete");
 }
 
 #[test]

@@ -44,6 +44,8 @@ Setup asks before sending package text and tests the connection with an inert re
 
 Subsequent scans use the saved connection automatically. Run setup again to change it. Use `scan PATH --no-ai` for static checks alone, or `--config /path/to/trusted/ai.toml` for an explicit connection. Without saved or explicit settings, scans run static checks alone. AURLens never discovers settings from a package checkout.
 
+Setup also saves the preferences used by the experimental Shelly hook in the same file. Run `aurlens setup --disable-shelly` to disable automatic review while keeping your AI connection. Stock Shelly still requires upstream hook support before these preferences have any effect.
+
 Codex reviews run through a restricted CLI profile with shell execution disabled. API and local model servers must support JSON output. Unsupported CLI versions, incompatible responses, and unavailable models make the review incomplete. For manual configuration and backend limits, see [the AI protocol](docs/ai-protocol.md).
 
 The model receives the current package text, relative file names, hashes, and a baseline change summary when requested. Baseline file bodies are not sent. Model responses are untrusted. Each AI finding must cite a real file, line, and matching excerpt. AI can add findings but cannot clear deterministic findings. See [the AI protocol](docs/ai-protocol.md).
@@ -95,6 +97,6 @@ The project-local [verify-aurlens skill](.agents/skills/verify-aurlens/SKILL.md)
 
 Keep the map current as behavior changes with pstack's `maintain-verification-skill` workflow. This does not schedule any recurring work.
 
-The [Shelly integration guide](docs/shelly-integration.md) documents its separate native test driver and current limits. Production integration still needs trusted settings, elevation and GUI verification, successful chroot and isolated workflows, and upstream support for stock Shelly.
+The [Shelly integration guide](docs/shelly-integration.md) documents its native test driver and current limits. Normal build paths are the first-release target. Advanced chroot and isolated execution remain experimental. Automatic review in stock Shelly requires upstream support.
 
 MIT licensed. All scanner rules in this project are original, limited pattern checks, not copied from other scanners.

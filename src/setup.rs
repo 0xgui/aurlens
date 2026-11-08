@@ -6,7 +6,7 @@ use rustix::termios::{
 use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM};
 use signal_hook::iterator::Signals;
 use std::fs;
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::PathBuf;
 use std::process::Command;
@@ -127,7 +127,10 @@ pub fn run() -> Result<(), String> {
     }
     ai.insert("send_source".into(), true.into());
     ai.insert("timeout_seconds".into(), 120.into());
-    let document = toml::Table::from_iter([("ai".into(), toml::Value::Table(ai))]);
+    let document = toml::Table::from_iter([
+        ("ai".into(), toml::Value::Table(ai)),
+        ("shelly".into(), toml::Value::Table(shelly_settings(true)?)),
+    ]);
     let text =
         toml::to_string_pretty(&document).map_err(|_| "Could not encode the configuration.")?;
     let mut pending = tempfile::NamedTempFile::new_in(directory)
@@ -179,6 +182,83 @@ pub fn run() -> Result<(), String> {
         return Err("Could not save the configuration.".into());
     }
     println!("Connection ready. Run: aurlens scan /path/to/package");
+    println!(
+        "Shelly review settings saved. Automatic review requires a compatible Shelly release."
+    );
+    Ok(())
+}
+
+fn shelly_settings(enabled: bool) -> Result<toml::Table, String> {
+    let executable = std::env::current_exe()
+        .and_then(|path| path.canonicalize())
+        .map_err(|_| "Could not resolve the installed AURLens executable.")?;
+    Ok(toml::Table::from_iter([
+        ("schema_version".into(), 1.into()),
+        ("enabled".into(), enabled.into()),
+        (
+            "executable".into(),
+            executable
+                .to_str()
+                .ok_or("AURLens executable path must be UTF-8.")?
+                .into(),
+        ),
+    ]))
+}
+
+pub fn disable_shelly() -> Result<(), String> {
+    let path = config_path()?;
+    let file = rustix::fs::open(
+        &path,
+        rustix::fs::OFlags::RDONLY
+            | rustix::fs::OFlags::CLOEXEC
+            | rustix::fs::OFlags::NOFOLLOW
+            | rustix::fs::OFlags::NONBLOCK,
+        rustix::fs::Mode::empty(),
+    )
+    .map(fs::File::from)
+    .map_err(|_| "Could not read saved settings. Run aurlens setup first.")?;
+    let metadata = file
+        .metadata()
+        .map_err(|_| "Could not inspect saved settings.")?;
+    if !metadata.is_file()
+        || metadata.uid() != rustix::process::getuid().as_raw()
+        || metadata.permissions().mode() & 0o077 != 0
+    {
+        return Err("Saved settings must be a private regular file owned by you.".into());
+    }
+    let mut text = String::new();
+    file.take(65_537)
+        .read_to_string(&mut text)
+        .map_err(|_| "Could not read saved settings.")?;
+    if text.len() > 65_536 {
+        return Err("Saved settings exceed the byte limit.".into());
+    }
+    let mut document: toml::Table =
+        toml::from_str(&text).map_err(|_| "Saved settings are invalid.")?;
+    document.insert("shelly".into(), toml::Value::Table(shelly_settings(false)?));
+    let mut pending =
+        tempfile::NamedTempFile::new_in(path.parent().ok_or("Invalid settings path.")?)
+            .map_err(|_| "Could not create private settings.")?;
+    pending
+        .as_file()
+        .set_permissions(fs::Permissions::from_mode(0o600))
+        .map_err(|_| "Could not protect settings.")?;
+    pending
+        .write_all(
+            toml::to_string_pretty(&document)
+                .map_err(|_| "Could not encode settings.")?
+                .as_bytes(),
+        )
+        .map_err(|_| "Could not save settings.")?;
+    load_config(pending.path()).map_err(|error| error.to_string())?;
+    pending
+        .as_file()
+        .sync_all()
+        .map_err(|_| "Could not save settings.")?;
+    pending
+        .persist(path)
+        .map_err(|_| "Could not save settings.")?;
+    println!("Automatic Shelly review disabled. Your AI connection is unchanged.");
     Ok(())
 }
 

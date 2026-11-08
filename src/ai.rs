@@ -39,6 +39,16 @@ fn error(code: &'static str, message: &'static str) -> AiError {
 #[serde(deny_unknown_fields)]
 struct ConfigFile {
     ai: toml::Table,
+    shelly: Option<ShellySettings>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ShellySettings {
+    schema_version: u32,
+    #[serde(rename = "enabled")]
+    _enabled: bool,
+    executable: std::path::PathBuf,
 }
 
 pub fn load_config(path: &Path) -> Result<AiConfig, AiError> {
@@ -73,9 +83,26 @@ pub fn load_config(path: &Path) -> Result<AiConfig, AiError> {
     let parsed: ConfigFile = toml::from_str(text).map_err(|_| {
         error(
             "ai_config_parse",
-            "AI configuration must contain only a valid [ai] table.",
+            "Configuration must contain valid AI settings and optional Shelly settings.",
         )
     })?;
+    if let Some(settings) = &parsed.shelly {
+        if settings.schema_version != 1
+            || !settings.executable.is_absolute()
+            || settings.executable.as_os_str().len() > 4096
+            || settings
+                .executable
+                .as_os_str()
+                .as_encoded_bytes()
+                .iter()
+                .any(|byte| *byte < 32 || *byte == 127)
+        {
+            return Err(error(
+                "shelly_config",
+                "Shelly settings require a supported version and an absolute executable path.",
+            ));
+        }
+    }
     let mut table = parsed.ai;
     let backend = table.remove("backend");
     let config = match backend.as_ref().and_then(toml::Value::as_str) {

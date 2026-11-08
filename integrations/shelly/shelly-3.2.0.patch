@@ -21,17 +21,26 @@
              "AUR needed",
 --- a/Shelly.PackageManager/src/aur/manager.zig
 +++ b/Shelly.PackageManager/src/aur/manager.zig
-@@ -15,6 +15,9 @@
+@@ -15,6 +15,10 @@
  const ShellyBuildConfiguration = @import("shellybuild.zig").ShellyBuildConfiguration;
  const package_builder = @import("builder/builder.zig");
  const review_integrity = @import("review_integrity.zig");
 +const aurlens = @import("aurlens.zig");
 +const reviewed_outputs = @import("reviewed_outputs.zig");
 +const build_destinations = @import("build_destinations.zig");
++const aurlens_settings = @import("aurlens_settings.zig");
  const source_pgp_keyring = @import("../shared/source_pgp_keyring.zig");
  
  pub const models = @import("models.zig");
-@@ -100,9 +103,11 @@
+@@ -44,6 +48,7 @@
+ const reviewDigest = review_integrity.reviewDigest;
+ 
+ pub const InitOptions = struct {
++    discover_aurlens_settings: bool = !builtin.is_test,
+     /// Skip equal-version target builds and archive reinstalls during installation.
+     needed: bool = false,
+     config_path: ?[]const u8 = null,
+@@ -100,9 +105,11 @@
      digest: [std.crypto.hash.sha2.Sha256.digest_length]u8,
      info: PkgbuildInfo,
      dependency_metadata: ?srcinfo.DependencyMetadata = null,
@@ -43,7 +52,7 @@
          if (self.dependency_metadata) |*metadata| metadata.deinit(allocator);
          self.validation_results.deinit(allocator);
          self.info.deinit(allocator);
-@@ -140,6 +145,7 @@
+@@ -140,6 +147,7 @@
  const ApprovedReview = struct {
      commit: []u8,
      digest: [std.crypto.hash.sha2.Sha256.digest_length]u8,
@@ -51,7 +60,43 @@
  };
  
  /// Decisions belong to one upgrade, including any dependency installs it starts.
-@@ -1007,6 +1013,15 @@
+@@ -243,6 +251,7 @@
+     cache_root: []u8,
+     aur_git_base_url: []u8,
+     makepkg_command: ?[]u8,
++    review_settings: aurlens_settings.Selection,
+     build_command: ?[]u8,
+     config_path: ?[:0]u8 = null,
+     shellybuild_config: *ShellyBuildConfiguration,
+@@ -317,6 +326,11 @@
+         else
+             null;
+         errdefer if (config_path) |path| allocator.free(path);
++        const review_settings = if (options.discover_aurlens_settings)
++            try aurlens_settings.loadForCaller(allocator, alpm.io(), environ)
++        else
++            aurlens_settings.Selection.environment;
++        errdefer review_settings.deinit(allocator);
+         const vcs_store_path = try std.fs.path.join(allocator, &.{ data_home, "Shelly", "vcs.json" });
+         errdefer allocator.free(vcs_store_path);
+         const chroot_path = try allocator.dupe(u8, options.chroot_path);
+@@ -341,6 +355,7 @@
+             .cache_root = cache_root,
+             .aur_git_base_url = aur_git_base_url,
+             .makepkg_command = makepkg_command,
++            .review_settings = review_settings,
+             .build_command = build_command,
+             .config_path = config_path,
+             .shellybuild_config = shellybuild_config,
+@@ -398,6 +413,7 @@
+         allocator.free(self.cache_root);
+         allocator.free(self.aur_git_base_url);
+         if (self.makepkg_command) |command| allocator.free(command);
++        self.review_settings.deinit(allocator);
+         if (self.build_command) |command| allocator.free(command);
+         if (self.config_path) |path| allocator.free(path);
+         allocator.free(self.vcs_store_path);
+@@ -1007,6 +1023,15 @@
              .digest = digest,
              .info = info,
              .validation_results = validation_results,
@@ -67,7 +112,7 @@
          };
      }
  
-@@ -2012,6 +2027,15 @@
+@@ -2012,6 +2037,15 @@
              .digest = digest,
              .info = info,
              .validation_results = validation_results,
@@ -83,7 +128,7 @@
          };
      }
  
-@@ -2022,16 +2046,37 @@
+@@ -2022,16 +2056,37 @@
          }
          if (self.approved_pkgbuild_reviews.get(prepared.package_base)) |review| {
              if (std.mem.eql(u8, review.commit, prepared.target_commit) and
@@ -127,7 +172,7 @@
              .source_files = &prepared.info.local_source_contents,
          });
          try self.checkCancelled();
-@@ -2044,6 +2089,45 @@
+@@ -2044,6 +2099,57 @@
              prepared.target_commit,
              prepared.digest,
          );
@@ -138,13 +183,25 @@
 +    }
 +
 +    fn aurlensExecutable(self: *Self) ?[]const u8 {
-+        return self.environ.getPosix("SHELLY_AURLENS");
++        return switch (self.review_settings) {
++            .environment => self.environ.getPosix("SHELLY_AURLENS"),
++            .disabled => null,
++            .configured => |settings| settings.executable,
++        };
++    }
++
++    fn aurlensConfiguration(self: *Self) ?[]const u8 {
++        return switch (self.review_settings) {
++            .environment => self.environ.getPosix("SHELLY_AURLENS_CONFIG"),
++            .disabled => null,
++            .configured => |settings| settings.configuration,
++        };
 +    }
 +
 +    fn scanAurlens(self: *Self, prepared: *const PreparedPackage) !?aurlens.Review {
 +        const executable = self.aurlensExecutable() orelse return null;
 +        if (!std.fs.path.isAbsolute(executable)) return error.InvalidAurlensExecutable;
-+        const config = self.environ.getPosix("SHELLY_AURLENS_CONFIG");
++        const config = self.aurlensConfiguration();
 +        if (config) |path| if (!std.fs.path.isAbsolute(path)) return error.InvalidAurlensConfiguration;
 +        var argv: std.ArrayList([]const u8) = .empty;
 +        defer argv.deinit(self.allocator);
@@ -173,7 +230,7 @@
      }
  
      fn resolvePkgbuildApproval(
-@@ -2146,6 +2230,7 @@
+@@ -2146,6 +2252,7 @@
          defer self.allocator.free(pkgbuild);
          const digest = try reviewDigest(self.allocator, self.io(), prepared.cache_path, pkgbuild, &prepared.info);
          if (!std.mem.eql(u8, &digest, &prepared.digest)) return error.ReviewedCheckoutChanged;
@@ -181,7 +238,7 @@
      }
  
      /// The only entry point from a prepared checkout into a package builder. Keeping the
-@@ -2166,6 +2251,19 @@
+@@ -2166,6 +2273,19 @@
          };
      }
  
@@ -201,7 +258,7 @@
      fn buildPreparedPackageImpl(
          self: *Self,
          prepared: *const PreparedPackage,
-@@ -2175,9 +2273,12 @@
+@@ -2175,9 +2295,12 @@
          try self.requirePkgbuildApproval(prepared);
          try self.verifyPreparedPackage(prepared);
          if (self.use_chroot or self.makepkg_command != null) {
@@ -216,7 +273,7 @@
              defer builder.deinitPaths(self.allocator, paths);
              return artifactsFromPaths(self.allocator, paths, requested_names);
          }
-@@ -2231,16 +2332,8 @@
+@@ -2231,16 +2354,8 @@
          }
  
          const active_context = self.operation_context orelse operation.context;
@@ -235,7 +292,7 @@
          const package_build = try package_builder.PackageBuilder.init(
              self.allocator,
              package_builds,
-@@ -2255,10 +2348,10 @@
+@@ -2255,10 +2370,10 @@
                  .sign = self.sign,
                  .sign_key = self.sign_key,
                  .start_directory = prepared.cache_path,
@@ -250,7 +307,7 @@
                  .pkgbuild_path = prepared.pkgbuild_path,
                  .native_database = package_builder.BuildDatabase.fromManager(self.alpm, self.config_path),
                  .reviewed_pkgbuild_digest = build_review.digest,
-@@ -2270,6 +2363,8 @@
+@@ -2270,6 +2385,8 @@
          );
          defer package_build.deinit();
          const artifacts = try package_build.runWithOperation(operation);
@@ -259,7 +316,7 @@
          standalone_completion = .success;
          return artifacts;
      }
-@@ -2299,10 +2394,13 @@
+@@ -2299,10 +2416,13 @@
          );
          if (self.config_path) |path|
              try arguments.appendSlice(self.allocator, &.{ "--config", path });
@@ -276,7 +333,7 @@
  
          // The isolated child is a privileged coordinator. It drops privileges
          // for review and runs lifecycle functions only in the guest.
-@@ -2332,8 +2430,8 @@
+@@ -2332,8 +2452,8 @@
              self.dispatcher.operation,
          );
          if (exit_code != 0) return error.BuildFailed;
@@ -287,7 +344,7 @@
          defer builder.deinitPaths(self.allocator, paths);
          return artifactsFromPaths(self.allocator, paths, requested_names);
      }
-@@ -2419,6 +2517,9 @@
+@@ -2419,6 +2539,9 @@
      const SrcinfoPurpose = enum { dependencies, refresh_version };
  
      fn generateReviewedSrcinfoUsing(self: *Self, prepared: *PreparedPackage, purpose: SrcinfoPurpose, comptime run_command: anytype) ![]u8 {
@@ -297,7 +354,7 @@
          if (prepared.target_commit.len != 0) {
              try self.verifyPreparedPackage(prepared);
          } else {
-@@ -2438,6 +2539,7 @@
+@@ -2438,6 +2561,7 @@
              );
              if (!std.mem.eql(u8, &digest, &prepared.digest))
                  return error.ReviewedPkgbuildChanged;
@@ -305,7 +362,7 @@
          }
          var names = try (pkgbuild_parser.PkgbuildParser{
              .allocator = self.allocator,
-@@ -2480,7 +2582,10 @@
+@@ -2480,7 +2604,10 @@
                  // Planning cannot accept even a controlled pkgver edit: no
                  // lifecycle function should run before dependencies exist.
                  try review.verifyCurrent(self.allocator, self.io(), prepared.pkgbuild_path, prepared.cache_path);
@@ -317,7 +374,7 @@
              },
              .refresh_version => try self.reconcilePreparedPkgver(prepared, &review, names.items),
          }
-@@ -2549,7 +2654,11 @@
+@@ -2549,7 +2676,11 @@
          // may follow this controlled edit; reconciliation never grants approval.
          if (self.approved_pkgbuild_reviews.getPtr(prepared.package_base)) |approval| {
              if (std.mem.eql(u8, approval.commit, prepared.target_commit) and
@@ -330,7 +387,7 @@
          }
          self.allocator.free(prepared.new_pkgbuild);
          prepared.info.deinit(self.allocator);
-@@ -2587,6 +2696,9 @@
+@@ -2587,6 +2718,9 @@
          );
          if (purpose == .dependencies) try arguments.append(self.allocator, "--metadata-only");
          if (self.config_path) |path| try arguments.appendSlice(self.allocator, &.{ "--config", path });
@@ -340,7 +397,7 @@
          var command = try builder.invokingUserCleanCommand(
              self.allocator,
              self.io(),
-@@ -2657,21 +2769,13 @@
+@@ -2657,21 +2791,13 @@
          };
  
          const active_context = self.operation_context orelse operation.context;
@@ -367,7 +424,7 @@
  
          var package_build = try package_builder.PackageBuilder.init(
              self.allocator,
-@@ -2686,10 +2790,10 @@
+@@ -2686,10 +2812,10 @@
                  .skip_source_pgp_verification = true,
                  .sign = false,
                  .start_directory = prepared.cache_path,
@@ -382,7 +439,7 @@
                  .pkgbuild_path = prepared.pkgbuild_path,
                  .native_database = package_builder.BuildDatabase.fromManager(self.alpm, self.config_path),
                  .reviewed_pkgbuild_digest = review.digest,
-@@ -2925,6 +3029,7 @@
+@@ -2925,6 +3051,7 @@
      fn selectBuiltPackageFiles(
          self: *Self,
          cache_path: []const u8,
@@ -390,7 +447,7 @@
          requested_names: []const []const u8,
      ) ![][]u8 {
          const srcinfo_path = try std.fs.path.join(self.allocator, &.{ cache_path, ".SRCINFO" });
-@@ -2936,7 +3041,7 @@
+@@ -2936,7 +3063,7 @@
              return builder.selectBuiltPackageFilesForNames(
                  self.allocator,
                  self.io(),
@@ -399,7 +456,7 @@
                  requested_names,
                  package_names,
              );
-@@ -2944,7 +3049,7 @@
+@@ -2944,7 +3071,7 @@
              return builder.selectBuiltPackageFilesForNames(
                  self.allocator,
                  self.io(),
@@ -408,7 +465,7 @@
                  requested_names,
                  requested_names,
              );
-@@ -2973,9 +3078,22 @@
+@@ -2973,9 +3100,22 @@
          return false;
      }
  
@@ -433,7 +490,7 @@
              try builder.invokingUserCommand(self.allocator, self.io(), self.environ, command_path, &.{})
          else
              try builder.makechrootpkgCommand(self.allocator, self.io(), self.environ, self.chroot_path);
-@@ -4237,7 +4355,7 @@
+@@ -4237,7 +4377,7 @@
      const config_argument = try std.fmt.allocPrint(allocator, "--config\n{s}\n", .{paths.config_path});
      defer allocator.free(config_argument);
      try std.testing.expect(std.mem.indexOf(u8, args, config_argument) != null);
@@ -442,7 +499,7 @@
      defer builder.deinitPaths(allocator, artifacts);
      try std.testing.expectEqual(@as(usize, 0), artifacts.len);
      var dependencies = DependencyCollection.init(allocator);
-@@ -7489,3 +7607,647 @@
+@@ -7489,3 +7629,715 @@
          return error.ExpectedMissingReviewInputFailure;
      } else |_| {}
  }
@@ -669,6 +726,74 @@
 +    active = false;
 +    try std.testing.expectError(error.FileNotFound, std.Io.Dir.cwd().access(io, owned_root, .{}));
 +    try std.testing.expectError(error.FileNotFound, std.Io.Dir.cwd().access(io, artifacts[0].path, .{}));
++}
++
++test "AURLens saved setup enables review without environment switches" {
++    const executable = std.testing.environ.getPosix("AURLENS_TEST_BIN") orelse return error.SkipZigTest;
++    const allocator = std.testing.allocator;
++    const io = std.testing.io;
++    var paths = try createAurManagerFixturePaths(allocator, io);
++    defer paths.deinit(allocator);
++    const config_root = try std.fs.path.join(allocator, &.{ paths.root, "config" });
++    defer allocator.free(config_root);
++    const directory = try std.fs.path.join(allocator, &.{ config_root, "aurlens" });
++    defer allocator.free(directory);
++    try std.Io.Dir.cwd().createDirPath(io, directory);
++    const configuration = try std.fs.path.join(allocator, &.{ directory, "config.toml" });
++    defer allocator.free(configuration);
++    const model = try std.fs.path.join(allocator, &.{ paths.root, "fixture-codex" });
++    defer allocator.free(model);
++    try writeFixtureFile(io, model,
++        \\#!/usr/bin/python3
++        \\import json, sys
++        \\source = json.loads(sys.stdin.read().split('Untrusted package snapshot JSON:\n', 1)[1])
++        \\opinion = {'snapshot_digest':source['snapshot_digest'], 'summary':'Fixture reviewed.', 'findings':[]}
++        \\print(json.dumps({'type':'item.completed','item':{'type':'agent_message','text':json.dumps(opinion)}}))
++        \\print(json.dumps({'type':'turn.completed'}))
++        \\
++    , true);
++    const contents = try std.fmt.allocPrint(
++        allocator,
++        "[ai]\nbackend='codex'\nexecutable='{s}'\nsend_source=true\n[shelly]\nschema_version=1\nenabled=true\nexecutable='{s}'\n",
++        .{ model, executable },
++    );
++    defer allocator.free(contents);
++    try writeFixtureFile(io, configuration, contents, false);
++    const config_file = try std.Io.Dir.cwd().openFile(io, configuration, .{});
++    try config_file.setPermissions(io, .fromMode(0o600));
++    config_file.close(io);
++    var environment = try paths.environ.createMap(allocator);
++    defer environment.deinit();
++    try environment.put("XDG_CONFIG_HOME", config_root);
++    const block = try environment.createPosixBlock(allocator, .{});
++    paths.environ.block.deinit(allocator);
++    paths.environ.block = block;
++    try createAurlensPayloadFixture(allocator, io, paths.remote_root);
++    var manager = try Manager.init(allocator, paths.environ, .{
++        .discover_aurlens_settings = true,
++        .config_path = paths.config_path,
++        .cache_root = paths.cache_root,
++        .aur_git_base_url = paths.remote_root,
++        .shellybuild_configuration_paths = .{ .system = paths.shellybuild_system_path, .user = paths.shellybuild_user_path },
++    });
++    defer manager.deinit();
++    try std.testing.expectEqualStrings(executable, manager.aurlensExecutable().?);
++    try std.testing.expectEqualStrings(configuration, manager.aurlensConfiguration().?);
++    _ = try manager.cachePkgbase("demo", "demo");
++    manager.setPkgbuildApprovalHandler(.{ .function = struct {
++        fn answer(_: ?*anyopaque, _: PkgbuildDiffRequest) bool {
++            return true;
++        }
++    }.answer });
++    var prepared = try manager.preparePackageForBuild("demo", null);
++    defer prepared.deinit(allocator);
++    try manager.requirePkgbuildApproval(&prepared);
++    const metadata = try manager.generateReviewedSrcinfoUsing(&prepared, .dependencies, runFixtureSrcinfoCommand);
++    defer allocator.free(metadata);
++    const artifacts = try manager.buildPreparedPackage(&prepared, &.{"demo"}, false);
++    defer package_builder.deinitArtifacts(allocator, artifacts);
++    try inspectAurlensPayload(manager, artifacts, prepared.cache_path);
++    try manager.verifyPreparedPackage(&prepared);
 +}
 +
 +fn configureAurlensChildFixture(paths: *AurManagerFixturePaths) !void {
@@ -1446,3 +1571,103 @@
 +        if (count != 1) @compileError("Each build destination must have exactly one CLI option");
 +    }
 +}
+--- a/Shelly.Cli.Zig/src/runtime/proxy_environment.zig
++++ b/Shelly.Cli.Zig/src/runtime/proxy_environment.zig
+@@ -3,7 +3,7 @@
+ pub const marker = "--proxy-environment-stdin";
+ const frame_prefix = "[JSON]";
+ const frame_suffix = "[/JSON]";
+-const max_encoded_frame_len = 4096;
++const max_encoded_frame_len = 16384;
+ 
+ const Frame = struct {
+     @"$kind": []const u8,
+@@ -13,6 +13,7 @@
+     HTTPS_PROXY: ?[]const u8 = null,
+     all_proxy: ?[]const u8 = null,
+     ALL_PROXY: ?[]const u8 = null,
++    XDG_CONFIG_HOME: ?[]const u8 = null,
+ };
+ 
+ pub const Prepared = struct {
+@@ -100,6 +101,11 @@
+             try environment_map.put(name, value);
+         }
+     }
++    if (parsed.value.XDG_CONFIG_HOME) |path| {
++        if (path.len > 4096 or !std.fs.path.isAbsolute(path) or std.mem.findScalar(u8, path, 0) != null)
++            return error.InvalidProxyEnvironmentFrame;
++        try environment_map.put("XDG_CONFIG_HOME", path);
++    }
+ 
+     const environ: std.process.Environ = .{
+         .block = try environment_map.createPosixBlock(allocator, .{}),
+@@ -170,6 +176,27 @@
+     try std.testing.expect(prepared.map(&initial_map) == &initial_map);
+ }
+ 
++test "config location survives privileged launch and rejects invalid paths" {
++    const allocator = std.testing.allocator;
++    const args = [_][]const u8{ "install", marker };
++    for ([_][]const u8{
++        "{\"$kind\":\"proxy.environment\",\"XDG_CONFIG_HOME\":\"/tmp/aurlens-fixture/config\"}",
++        "{\"$kind\":\"proxy.environment\",\"XDG_CONFIG_HOME\":\"relative\"}",
++        "{\"$kind\":\"proxy.environment\",\"XDG_CONFIG_HOME\":\"/tmp/invalid\\u0000path\"}",
++    }, 0..) |json, index| {
++        const frame = try encodeTestFrame(allocator, json);
++        defer allocator.free(frame);
++        var reader = std.Io.Reader.fixed(frame);
++        if (index == 0) {
++            var prepared = try prepare(allocator, &reader, .empty, &args);
++            defer prepared.deinit(allocator);
++            try std.testing.expectEqualStrings("/tmp/aurlens-fixture/config", prepared.environment_map.?.get("XDG_CONFIG_HOME").?);
++        } else {
++            try std.testing.expectError(error.InvalidProxyEnvironmentFrame, prepare(allocator, &reader, .empty, &args));
++        }
++    }
++}
++
+ test "missing proxy environment frame fails closed" {
+     var reader = std.Io.Reader.fixed("");
+     const args = [_][]const u8{ "install", marker };
+--- a/Shelly.Ui.Gtk/src/services/shelly_operation.zig
++++ b/Shelly.Ui.Gtk/src/services/shelly_operation.zig
+@@ -36,6 +36,7 @@
+     HTTPS_PROXY: ?[]const u8 = null,
+     all_proxy: ?[]const u8 = null,
+     ALL_PROXY: ?[]const u8 = null,
++    XDG_CONFIG_HOME: ?[]const u8 = null,
+ };
+ 
+ fn serializeProxyEnvironment(
+@@ -49,10 +50,11 @@
+         .HTTPS_PROXY = environment.get("HTTPS_PROXY"),
+         .all_proxy = environment.get("all_proxy"),
+         .ALL_PROXY = environment.get("ALL_PROXY"),
++        .XDG_CONFIG_HOME = environment.get("XDG_CONFIG_HOME"),
+     };
+     if (frame.http_proxy == null and frame.HTTP_PROXY == null and
+         frame.https_proxy == null and frame.HTTPS_PROXY == null and
+-        frame.all_proxy == null and frame.ALL_PROXY == null)
++        frame.all_proxy == null and frame.ALL_PROXY == null and frame.XDG_CONFIG_HOME == null)
+     {
+         return null;
+     }
+@@ -1065,6 +1067,17 @@
+     try std.testing.expect(try serializeProxyEnvironment(std.testing.allocator, &environment) == null);
+ }
+ 
++test "config location is serialized without proxy settings" {
++    var environment = std.process.Environ.Map.init(std.testing.allocator);
++    defer environment.deinit();
++    try environment.put("XDG_CONFIG_HOME", "/tmp/aurlens-fixture/config");
++    const json = (try serializeProxyEnvironment(std.testing.allocator, &environment)).?;
++    defer std.testing.allocator.free(json);
++    var parsed = try std.json.parseFromSlice(ProxyEnvironmentFrame, std.testing.allocator, json, .{});
++    defer parsed.deinit();
++    try std.testing.expectEqualStrings("/tmp/aurlens-fixture/config", parsed.value.XDG_CONFIG_HOME.?);
++}
++
+ test "clean cache argv includes the entire AUR cache regardless of repository retention" {
+     for ([_][]const u8{ "0", "3" }) |keep| {
+         const argv = try ShellyCommands.clean_cache(std.testing.allocator, keep);

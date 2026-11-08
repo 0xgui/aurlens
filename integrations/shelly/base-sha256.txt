@@ -4,3 +4,5 @@
 b5900d7583af43de42634b88f154834856fafbb6f1320fbaa163d7b1d0dc339c  Shelly.PackageManager/src/aur/builder/builder.zig
 22ffa3620fa7b6d1eef738a94675bb7a997dd4ec3600aeb7295c15025dbdf3cc  Shelly.Cli.Zig/src/commands/builder.zig
 f3077ce83d4a191d359a765333fc158fa06caf1e47298784fc5f6641f318623f  Shelly.Cli.Zig/src/cli/catalog/builder.zig
+8c7f6795a6722f8b3d03fca49689288220b2f5ebc2aa342e6a1a7a326d21d844  Shelly.Cli.Zig/src/runtime/proxy_environment.zig
+eb4ab4c738551ed10587da756a01e0c864a656204088f3a64875cf8b48e5f5f9  Shelly.Ui.Gtk/src/services/shelly_operation.zig

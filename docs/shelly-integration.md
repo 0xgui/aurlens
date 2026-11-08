@@ -16,13 +16,17 @@ In-process metadata, native builds, Shelly child builds, and makepkg use a share
 
 Child commands receive internal destination arguments without broadening their clean user environment. Review, metadata, source-key, and version helpers keep host outputs external; isolated guest arguments omit those host paths. Makepkg receives destination environment variables while retaining its normal policy loading. Archive selection reads the effective package destination, including uncompressed `.pkg.tar` packages.
 
-The patch does not cover standalone `shelly build`, official repository package hooks, remote downloads, or commands that bypass this AUR manager. It does not supply an old checkout for `--baseline`. GUI rendering and preservation of configuration across privilege elevation remain unverified.
+The patch does not cover standalone `shelly build`, official repository package hooks, remote downloads, or commands that bypass this AUR manager. It does not supply an old checkout for `--baseline`. GUI configuration-path transport has a focused test; interactive GUI rendering still needs verification.
 
-## Development configuration
+## Configuration
 
-In a patched development build, set `SHELLY_AURLENS` to an absolute trusted AURLens executable path. Omission disables the experiment. An empty or relative value fails. Set `SHELLY_AURLENS_CONFIG` to an absolute trusted AI configuration path to require AI review. The existing AURLens rules reject configuration inside the reviewed checkout.
+Run `aurlens setup` once. The hook reads the private `[shelly]` preferences from the same user configuration file as the AI connection. It passes that file explicitly to AURLens and requires the configured AI review to complete. Run `aurlens setup --disable-shelly` to turn off automatic review without changing the connection used by manual scans.
 
-These variables must reach the manager process. A launcher or privilege-elevation tool may remove them. This development mechanism is not a system-wide enforcement policy. A production integration needs trusted persistent settings and visible enabled status.
+Settings must be a regular file owned by the invoking user with no group or other permissions. The loader rejects symlinks, oversized files, unsupported settings, and relative executable paths. A custom absolute `XDG_CONFIG_HOME` is preserved through Shelly's existing GUI elevation frame. No credentials are added to that frame.
+
+For development without saved Shelly preferences, set `SHELLY_AURLENS` to an absolute trusted AURLens executable path. Omission disables the experiment. An empty or relative value fails. Set `SHELLY_AURLENS_CONFIG` to an absolute trusted AI configuration path to require AI review. Saved disabled preferences take precedence over these variables. The existing AURLens rules reject configuration inside the reviewed checkout.
+
+These development variables must reach the manager process; a launcher may remove them. User preferences are not a system-wide enforcement policy.
 
 The adapter starts an argv process as the invoking user. It uses Shelly's bounded process runner with a 120-second scan timeout and a 30-second verification timeout. It accepts reports up to 4 MiB after the runner's 16 MiB stream limits. Missing executables, timeouts, invalid JSON, unsupported versions or coverage, mismatched exit codes, incomplete requested AI, and changed files stop the operation.
 
@@ -54,6 +58,6 @@ Abrupt process termination can leave owned scratch directories. The patch does n
 
 Real command and makepkg builds have been exercised. Chroot destination mapping and isolated host/guest argument transport have code and transport tests, but successful real chroot and isolated builds remain unverified. The driver does not claim that a fake coordinator exit proves either mode. Controlled `pkgver` changes still need a complete re-review workflow. These gaps prevent this patch from being suitable for daily installs and updates across all modes.
 
-The existing parent/child configuration path mismatch under elevation also remains unresolved: the parent ignores `XDG_CONFIG_HOME` when elevation markers exist, while a clean child removes those markers and can preserve that variable. Destination overrides retain the policy each child loads, but do not prove it is identical to the parent's policy. Persistent settings must resolve this before production use.
+Shelly's existing build-policy parent/child configuration path mismatch under elevation remains unresolved: the parent ignores `XDG_CONFIG_HOME` when elevation markers exist, while a clean child removes those markers and can preserve that variable. Destination overrides retain the policy each child loads, but do not prove it is identical to the parent's policy. AURLens's own settings use the invoking user's absolute configuration path independently.
 
 A process-external digest check also leaves a race before later filesystem reads. It does not freeze the checkout against a concurrent writer. Immutable execution inputs or operating-system isolation are needed for that stronger guarantee.
