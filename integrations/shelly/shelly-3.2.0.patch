@@ -21,16 +21,17 @@
              "AUR needed",
 --- a/Shelly.PackageManager/src/aur/manager.zig
 +++ b/Shelly.PackageManager/src/aur/manager.zig
-@@ -15,6 +15,8 @@
+@@ -15,6 +15,9 @@
  const ShellyBuildConfiguration = @import("shellybuild.zig").ShellyBuildConfiguration;
  const package_builder = @import("builder/builder.zig");
  const review_integrity = @import("review_integrity.zig");
 +const aurlens = @import("aurlens.zig");
 +const reviewed_outputs = @import("reviewed_outputs.zig");
++const build_destinations = @import("build_destinations.zig");
  const source_pgp_keyring = @import("../shared/source_pgp_keyring.zig");
  
  pub const models = @import("models.zig");
-@@ -100,9 +102,11 @@
+@@ -100,9 +103,11 @@
      digest: [std.crypto.hash.sha2.Sha256.digest_length]u8,
      info: PkgbuildInfo,
      dependency_metadata: ?srcinfo.DependencyMetadata = null,
@@ -42,7 +43,7 @@
          if (self.dependency_metadata) |*metadata| metadata.deinit(allocator);
          self.validation_results.deinit(allocator);
          self.info.deinit(allocator);
-@@ -140,6 +144,7 @@
+@@ -140,6 +145,7 @@
  const ApprovedReview = struct {
      commit: []u8,
      digest: [std.crypto.hash.sha2.Sha256.digest_length]u8,
@@ -50,7 +51,7 @@
  };
  
  /// Decisions belong to one upgrade, including any dependency installs it starts.
-@@ -1007,6 +1012,15 @@
+@@ -1007,6 +1013,15 @@
              .digest = digest,
              .info = info,
              .validation_results = validation_results,
@@ -66,7 +67,7 @@
          };
      }
  
-@@ -2012,6 +2026,15 @@
+@@ -2012,6 +2027,15 @@
              .digest = digest,
              .info = info,
              .validation_results = validation_results,
@@ -82,7 +83,7 @@
          };
      }
  
-@@ -2022,16 +2045,37 @@
+@@ -2022,16 +2046,37 @@
          }
          if (self.approved_pkgbuild_reviews.get(prepared.package_base)) |review| {
              if (std.mem.eql(u8, review.commit, prepared.target_commit) and
@@ -126,7 +127,7 @@
              .source_files = &prepared.info.local_source_contents,
          });
          try self.checkCancelled();
-@@ -2044,6 +2088,45 @@
+@@ -2044,6 +2089,45 @@
              prepared.target_commit,
              prepared.digest,
          );
@@ -172,7 +173,7 @@
      }
  
      fn resolvePkgbuildApproval(
-@@ -2146,6 +2229,7 @@
+@@ -2146,6 +2230,7 @@
          defer self.allocator.free(pkgbuild);
          const digest = try reviewDigest(self.allocator, self.io(), prepared.cache_path, pkgbuild, &prepared.info);
          if (!std.mem.eql(u8, &digest, &prepared.digest)) return error.ReviewedCheckoutChanged;
@@ -180,13 +181,10 @@
      }
  
      /// The only entry point from a prepared checkout into a package builder. Keeping the
-@@ -2163,6 +2247,19 @@
-                 if (self.upgrade_reviews) |reviews| try reviews.decline(prepared.package_base);
-             }
-             return err;
-+        };
-+    }
-+
+@@ -2166,6 +2251,19 @@
+         };
+     }
+ 
 +    fn resolvePreparedOutputs(self: *Self, prepared: *const PreparedPackage, metadata: bool) !reviewed_outputs.Resolved {
 +        if (prepared.outputs) |*outputs| return outputs.resolve(prepared.package_base);
 +        return .{
@@ -197,10 +195,28 @@
 +            .packages = if (metadata) prepared.cache_path else self.shellybuild_config.destinations.packages orelse prepared.cache_path,
 +            .sources = if (metadata) prepared.cache_path else self.shellybuild_config.destinations.sources orelse prepared.cache_path,
 +            .logs = if (metadata) prepared.cache_path else self.shellybuild_config.destinations.logs orelse prepared.cache_path,
-         };
-     }
- 
-@@ -2231,16 +2328,8 @@
++        };
++    }
++
+     fn buildPreparedPackageImpl(
+         self: *Self,
+         prepared: *const PreparedPackage,
+@@ -2175,9 +2273,12 @@
+         try self.requirePkgbuildApproval(prepared);
+         try self.verifyPreparedPackage(prepared);
+         if (self.use_chroot or self.makepkg_command != null) {
+-            if (!(try self.buildExternalPackage(prepared.package_name, prepared.cache_path)))
++            const outputs = if (prepared.outputs != null) try self.resolvePreparedOutputs(prepared, false) else null;
++            defer if (outputs) |value| self.allocator.free(value.work);
++            if (!(try self.buildExternalPackage(prepared.package_name, prepared.cache_path, outputs)))
+                 return error.BuildFailed;
+-            const paths = try self.selectBuiltPackageFiles(prepared.cache_path, requested_names);
++            if (prepared.outputs != null) try self.verifyPreparedPackage(prepared);
++            const paths = try self.selectBuiltPackageFiles(prepared.cache_path, if (outputs) |value| value.packages else prepared.cache_path, requested_names);
+             defer builder.deinitPaths(self.allocator, paths);
+             return artifactsFromPaths(self.allocator, paths, requested_names);
+         }
+@@ -2231,16 +2332,8 @@
          }
  
          const active_context = self.operation_context orelse operation.context;
@@ -219,7 +235,7 @@
          const package_build = try package_builder.PackageBuilder.init(
              self.allocator,
              package_builds,
-@@ -2255,10 +2344,10 @@
+@@ -2255,10 +2348,10 @@
                  .sign = self.sign,
                  .sign_key = self.sign_key,
                  .start_directory = prepared.cache_path,
@@ -234,7 +250,7 @@
                  .pkgbuild_path = prepared.pkgbuild_path,
                  .native_database = package_builder.BuildDatabase.fromManager(self.alpm, self.config_path),
                  .reviewed_pkgbuild_digest = build_review.digest,
-@@ -2270,6 +2359,8 @@
+@@ -2270,6 +2363,8 @@
          );
          defer package_build.deinit();
          const artifacts = try package_build.runWithOperation(operation);
@@ -243,7 +259,35 @@
          standalone_completion = .success;
          return artifacts;
      }
-@@ -2419,6 +2510,9 @@
+@@ -2299,10 +2394,13 @@
+         );
+         if (self.config_path) |path|
+             try arguments.appendSlice(self.allocator, &.{ "--config", path });
+-        // AUR artifact selection reads the checkout; do not let a configured
+-        // standalone build destination redirect the coordinator's exports.
+-        if (self.use_isolated)
++        const outputs = if (prepared.outputs != null) try self.resolvePreparedOutputs(prepared, false) else null;
++        defer if (outputs) |value| self.allocator.free(value.work);
++        if (outputs) |value| {
++            try build_destinations.appendArguments(self.allocator, &arguments, value);
++        } else if (self.use_isolated) {
+             try arguments.appendSlice(self.allocator, &.{ "--package-destination", prepared.cache_path });
++        }
+ 
+         // The isolated child is a privileged coordinator. It drops privileges
+         // for review and runs lifecycle functions only in the guest.
+@@ -2332,8 +2430,8 @@
+             self.dispatcher.operation,
+         );
+         if (exit_code != 0) return error.BuildFailed;
+-
+-        const paths = try self.selectBuiltPackageFiles(prepared.cache_path, requested_names);
++        if (prepared.outputs != null) try self.verifyPreparedPackage(prepared);
++        const paths = try self.selectBuiltPackageFiles(prepared.cache_path, if (outputs) |value| value.packages else prepared.cache_path, requested_names);
+         defer builder.deinitPaths(self.allocator, paths);
+         return artifactsFromPaths(self.allocator, paths, requested_names);
+     }
+@@ -2419,6 +2517,9 @@
      const SrcinfoPurpose = enum { dependencies, refresh_version };
  
      fn generateReviewedSrcinfoUsing(self: *Self, prepared: *PreparedPackage, purpose: SrcinfoPurpose, comptime run_command: anytype) ![]u8 {
@@ -253,7 +297,7 @@
          if (prepared.target_commit.len != 0) {
              try self.verifyPreparedPackage(prepared);
          } else {
-@@ -2438,6 +2532,7 @@
+@@ -2438,6 +2539,7 @@
              );
              if (!std.mem.eql(u8, &digest, &prepared.digest))
                  return error.ReviewedPkgbuildChanged;
@@ -261,7 +305,7 @@
          }
          var names = try (pkgbuild_parser.PkgbuildParser{
              .allocator = self.allocator,
-@@ -2480,7 +2575,10 @@
+@@ -2480,7 +2582,10 @@
                  // Planning cannot accept even a controlled pkgver edit: no
                  // lifecycle function should run before dependencies exist.
                  try review.verifyCurrent(self.allocator, self.io(), prepared.pkgbuild_path, prepared.cache_path);
@@ -273,7 +317,7 @@
              },
              .refresh_version => try self.reconcilePreparedPkgver(prepared, &review, names.items),
          }
-@@ -2549,7 +2647,11 @@
+@@ -2549,7 +2654,11 @@
          // may follow this controlled edit; reconciliation never grants approval.
          if (self.approved_pkgbuild_reviews.getPtr(prepared.package_base)) |approval| {
              if (std.mem.eql(u8, approval.commit, prepared.target_commit) and
@@ -286,7 +330,17 @@
          }
          self.allocator.free(prepared.new_pkgbuild);
          prepared.info.deinit(self.allocator);
-@@ -2657,21 +2759,13 @@
+@@ -2587,6 +2696,9 @@
+         );
+         if (purpose == .dependencies) try arguments.append(self.allocator, "--metadata-only");
+         if (self.config_path) |path| try arguments.appendSlice(self.allocator, &.{ "--config", path });
++        const outputs = if (prepared.outputs != null) try self.resolvePreparedOutputs(prepared, true) else null;
++        defer if (outputs) |value| self.allocator.free(value.work);
++        if (outputs) |value| try build_destinations.appendArguments(self.allocator, &arguments, value);
+         var command = try builder.invokingUserCleanCommand(
+             self.allocator,
+             self.io(),
+@@ -2657,21 +2769,13 @@
          };
  
          const active_context = self.operation_context orelse operation.context;
@@ -313,7 +367,7 @@
  
          var package_build = try package_builder.PackageBuilder.init(
              self.allocator,
-@@ -2686,10 +2780,10 @@
+@@ -2686,10 +2790,10 @@
                  .skip_source_pgp_verification = true,
                  .sign = false,
                  .start_directory = prepared.cache_path,
@@ -328,7 +382,67 @@
                  .pkgbuild_path = prepared.pkgbuild_path,
                  .native_database = package_builder.BuildDatabase.fromManager(self.alpm, self.config_path),
                  .reviewed_pkgbuild_digest = review.digest,
-@@ -7489,3 +7583,516 @@
+@@ -2925,6 +3029,7 @@
+     fn selectBuiltPackageFiles(
+         self: *Self,
+         cache_path: []const u8,
++        artifacts_path: []const u8,
+         requested_names: []const []const u8,
+     ) ![][]u8 {
+         const srcinfo_path = try std.fs.path.join(self.allocator, &.{ cache_path, ".SRCINFO" });
+@@ -2936,7 +3041,7 @@
+             return builder.selectBuiltPackageFilesForNames(
+                 self.allocator,
+                 self.io(),
+-                cache_path,
++                artifacts_path,
+                 requested_names,
+                 package_names,
+             );
+@@ -2944,7 +3049,7 @@
+             return builder.selectBuiltPackageFilesForNames(
+                 self.allocator,
+                 self.io(),
+-                cache_path,
++                artifacts_path,
+                 requested_names,
+                 requested_names,
+             );
+@@ -2973,9 +3078,22 @@
+         return false;
+     }
+ 
+-    fn buildExternalPackage(self: *Self, package_name: []const u8, cache_path: []const u8) !bool {
++    fn buildExternalPackage(self: *Self, package_name: []const u8, cache_path: []const u8, outputs: ?build_destinations.Resolved) !bool {
+         if (self.use_chroot) try self.ensureChrootExists();
+-        var command = if (self.makepkg_command) |command_path|
++        var command = if (outputs) |destinations| mapped: {
++            try caller_io.makePath(self.allocator, self.io(), self.environ, destinations.work);
++            var original = if (self.makepkg_command) |path|
++                try builder.directCommand(self.allocator, path, &.{})
++            else
++                try builder.makechrootpkgCommand(self.allocator, self.io(), self.environ, self.chroot_path);
++            defer original.deinit(self.allocator);
++            var mapped = try build_destinations.externalCommand(self.allocator, original.asConst(), destinations, if (self.makepkg_command != null) .makepkg else .chroot);
++            defer mapped.deinit(self.allocator);
++            break :mapped if (self.makepkg_command != null)
++                try builder.invokingUserCommand(self.allocator, self.io(), self.environ, mapped.argv[0], mapped.argv[1..])
++            else
++                try builder.directCommand(self.allocator, mapped.argv[0], mapped.argv[1..]);
++        } else if (self.makepkg_command) |command_path|
+             try builder.invokingUserCommand(self.allocator, self.io(), self.environ, command_path, &.{})
+         else
+             try builder.makechrootpkgCommand(self.allocator, self.io(), self.environ, self.chroot_path);
+@@ -4237,7 +4355,7 @@
+     const config_argument = try std.fmt.allocPrint(allocator, "--config\n{s}\n", .{paths.config_path});
+     defer allocator.free(config_argument);
+     try std.testing.expect(std.mem.indexOf(u8, args, config_argument) != null);
+-    const artifacts = try manager.selectBuiltPackageFiles(prepared.cache_path, &.{"demo"});
++    const artifacts = try manager.selectBuiltPackageFiles(prepared.cache_path, prepared.cache_path, &.{"demo"});
+     defer builder.deinitPaths(allocator, artifacts);
+     try std.testing.expectEqual(@as(usize, 0), artifacts.len);
+     var dependencies = DependencyCollection.init(allocator);
+@@ -7489,3 +7607,647 @@
          return error.ExpectedMissingReviewInputFailure;
      } else |_| {}
  }
@@ -480,6 +594,7 @@
 +        \\source=('payload.txt')
 +        \\sha256sums=('SKIP')
 +        \\source "$startdir/.helper.sh"
++        \\if [[ -n ${srcdir:-} ]]; then mkdir -p "$srcdir"; fi
 +        \\prepare() { cp payload.txt prepared.txt; }
 +        \\build() { transform_payload; }
 +        \\check() { test "$(cat built.txt)" = 'REVIEWED PAYLOAD'; }
@@ -554,6 +669,125 @@
 +    active = false;
 +    try std.testing.expectError(error.FileNotFound, std.Io.Dir.cwd().access(io, owned_root, .{}));
 +    try std.testing.expectError(error.FileNotFound, std.Io.Dir.cwd().access(io, artifacts[0].path, .{}));
++}
++
++fn configureAurlensChildFixture(paths: *AurManagerFixturePaths) !void {
++    const allocator = std.testing.allocator;
++    const io = std.testing.io;
++    const config_root = try std.fs.path.join(allocator, &.{ paths.root, "config" });
++    defer allocator.free(config_root);
++    const config_directory = try std.fs.path.join(allocator, &.{ config_root, "shelly" });
++    defer allocator.free(config_directory);
++    try std.Io.Dir.cwd().createDirPath(io, config_directory);
++    const build_config = try std.fs.path.join(allocator, &.{ config_directory, "shellybuild.conf" });
++    defer allocator.free(build_config);
++    try writeFixtureFile(io, build_config, "[sandbox]\nenabled = false\n[package]\npackager = 'AURLens child fixture'\n", false);
++    var environment = try paths.environ.createMap(allocator);
++    defer environment.deinit();
++    try environment.put("XDG_CONFIG_HOME", config_root);
++    const block = try environment.createPosixBlock(allocator, .{});
++    paths.environ.block.deinit(allocator);
++    paths.environ.block = block;
++}
++
++test "AURLens real child metadata and build preserve the reviewed recipe" {
++    const executable = std.testing.environ.getPosix("AURLENS_TEST_BIN") orelse return error.SkipZigTest;
++    const child = std.testing.environ.getPosix("AURLENS_TEST_SHELLY_BIN") orelse return error.SkipZigTest;
++    const allocator = std.testing.allocator;
++    const io = std.testing.io;
++    var paths = try createAurManagerFixturePaths(allocator, io);
++    defer paths.deinit(allocator);
++    try enableFixtureAurlens(&paths, executable);
++    try configureAurlensChildFixture(&paths);
++    try createAurlensPayloadFixture(allocator, io, paths.remote_root);
++    var manager = try initFixtureAurManager(allocator, &paths, paths.remote_root);
++    defer manager.deinit();
++    manager.build_command = try allocator.dupe(u8, child);
++    manager.no_check = false;
++    _ = try manager.cachePkgbase("demo", "demo");
++    manager.setPkgbuildApprovalHandler(.{ .function = struct {
++        fn answer(_: ?*anyopaque, _: PkgbuildDiffRequest) bool {
++            return true;
++        }
++    }.answer });
++    var prepared = try manager.preparePackageForBuild("demo", null);
++    defer prepared.deinit(allocator);
++    const metadata = try manager.generateReviewedSrcinfoUsing(&prepared, .dependencies, Manager.generateReviewedSrcinfoWithCommand);
++    defer allocator.free(metadata);
++    try manager.verifyPreparedPackage(&prepared);
++    const version_metadata = try manager.generateReviewedSrcinfoUsing(&prepared, .refresh_version, Manager.generateReviewedSrcinfoWithCommand);
++    defer allocator.free(version_metadata);
++    try manager.verifyPreparedPackage(&prepared);
++    const artifacts = try manager.buildPreparedPackage(&prepared, &.{"demo"}, false);
++    defer package_builder.deinitArtifacts(allocator, artifacts);
++    try inspectAurlensPayload(manager, artifacts, prepared.cache_path);
++    try manager.verifyPreparedPackage(&prepared);
++    var package_info = try builder.runWithEnvironment(allocator, io, paths.environ, &.{ "bsdtar", "-xOf", artifacts[0].path, ".PKGINFO" }, null, 30);
++    defer package_info.deinit(allocator);
++    try std.testing.expectEqual(@as(u8, 0), package_info.exit_code);
++    try std.testing.expect(std.mem.indexOf(u8, package_info.stdout, "packager = AURLens child fixture\n") != null);
++    const repeated = try manager.buildPreparedPackage(&prepared, &.{"demo"}, false);
++    defer package_builder.deinitArtifacts(allocator, repeated);
++    try inspectAurlensPayload(manager, repeated, prepared.cache_path);
++    try manager.verifyPreparedPackage(&prepared);
++}
++
++test "AURLens real makepkg keeps outputs external and retains makepkg policy" {
++    const executable = std.testing.environ.getPosix("AURLENS_TEST_BIN") orelse return error.SkipZigTest;
++    const makepkg = std.testing.environ.getPosix("AURLENS_TEST_MAKEPKG_BIN") orelse return error.SkipZigTest;
++    const allocator = std.testing.allocator;
++    const io = std.testing.io;
++    var paths = try createAurManagerFixturePaths(allocator, io);
++    defer paths.deinit(allocator);
++    try enableFixtureAurlens(&paths, executable);
++    const config = try std.fs.path.join(allocator, &.{ paths.root, ".makepkg.conf" });
++    defer allocator.free(config);
++    try writeFixtureFile(io, config, "PACKAGER='AURLens makepkg fixture <fixture@example.invalid>'\nPKGEXT='.pkg.tar'\nCFLAGS='-DAURLENS_MAKEPKG_FIXTURE=1'\n", false);
++    try createAurlensPayloadFixture(allocator, io, paths.remote_root);
++    const remote = try std.fs.path.join(allocator, &.{ paths.remote_root, "demo.git" });
++    defer allocator.free(remote);
++    const recipe = try std.fs.path.join(allocator, &.{ remote, "PKGBUILD" });
++    defer allocator.free(recipe);
++    const original = try std.Io.Dir.cwd().readFileAlloc(io, recipe, allocator, .limited(max_file_size));
++    defer allocator.free(original);
++    const content = try std.fmt.allocPrint(allocator, "{s}\nbuild() {{ [[ \"$CFLAGS\" == *-DAURLENS_MAKEPKG_FIXTURE=1* ]] && transform_payload; }}\n", .{original});
++    defer allocator.free(content);
++    try writeFixtureFile(io, recipe, content, false);
++    try runFixtureCommand(allocator, io, &.{ "git", "add", "PKGBUILD" }, remote);
++    try runFixtureCommand(allocator, io, &.{ "git", "commit", "-m", "makepkg policy fixture" }, remote);
++    var manager = try initFixtureAurManager(allocator, &paths, paths.remote_root);
++    defer manager.deinit();
++    manager.makepkg_command = try allocator.dupe(u8, makepkg);
++    manager.no_check = false;
++    var output: std.Io.Writer.Allocating = .init(allocator);
++    defer output.deinit();
++    _ = try manager.dispatcher.addInformationalHandler(.{ .function = struct {
++        fn info(data: ?*anyopaque, args: events.InformationalArgs) void {
++            const writer: *std.Io.Writer.Allocating = @ptrCast(@alignCast(data.?));
++            writer.writer.print("{s}\n", .{args.message}) catch {};
++        }
++    }.info, .data = &output });
++    _ = try manager.cachePkgbase("demo", "demo");
++    manager.setPkgbuildApprovalHandler(.{ .function = struct {
++        fn answer(_: ?*anyopaque, _: PkgbuildDiffRequest) bool {
++            return true;
++        }
++    }.answer });
++    var prepared = try manager.preparePackageForBuild("demo", null);
++    defer prepared.deinit(allocator);
++    const metadata = try manager.generateReviewedDependencySrcinfo(&prepared);
++    defer allocator.free(metadata);
++    const artifacts = manager.buildPreparedPackage(&prepared, &.{"demo"}, false) catch |err| {
++        std.debug.print("makepkg fixture failed:\n{s}", .{output.written()});
++        return err;
++    };
++    defer package_builder.deinitArtifacts(allocator, artifacts);
++    try inspectAurlensPayload(manager, artifacts, prepared.cache_path);
++    try std.testing.expect(std.mem.endsWith(u8, artifacts[0].path, ".pkg.tar"));
++    var info = try builder.runWithEnvironment(allocator, io, paths.environ, &.{ "bsdtar", "-xOf", artifacts[0].path, ".PKGINFO" }, null, 30);
++    defer info.deinit(allocator);
++    try std.testing.expect(std.mem.indexOf(u8, info.stdout, "packager = AURLens makepkg fixture <fixture@example.invalid>\n") != null);
++    try manager.verifyPreparedPackage(&prepared);
 +}
 +
 +test "AURLens reviewed outputs honor custom final destinations and retain artifacts after cleanup" {
@@ -696,53 +930,64 @@
 +    const executable = std.testing.environ.getPosix("AURLENS_TEST_BIN") orelse return error.SkipZigTest;
 +    const allocator = std.testing.allocator;
 +    const io = std.testing.io;
-+    for ([_]bool{ true, false }) |metadata_write| {
-+        var paths = try createAurManagerFixturePaths(allocator, io);
-+        defer paths.deinit(allocator);
-+        try enableFixtureAurlens(&paths, executable);
-+        try createAurlensPayloadFixture(allocator, io, paths.remote_root);
-+        const remote = try std.fs.path.join(allocator, &.{ paths.remote_root, "demo.git" });
-+        defer allocator.free(remote);
-+        const recipe = try std.fs.path.join(allocator, &.{ remote, "PKGBUILD" });
-+        defer allocator.free(recipe);
-+        const original = try std.Io.Dir.cwd().readFileAlloc(io, recipe, allocator, .limited(max_file_size));
-+        defer allocator.free(original);
-+        const mutation = if (metadata_write)
-+            "\nprintf 'changed\\n' > \"$startdir/.runtime-write\"\n"
-+        else
-+            "\nprepare() { cp payload.txt prepared.txt; printf 'changed\\n' > \"$startdir/.runtime-write\"; }\n";
-+        const content = try std.fmt.allocPrint(allocator, "{s}{s}", .{ original, mutation });
-+        defer allocator.free(content);
-+        try writeFixtureFile(io, recipe, content, false);
-+        try runFixtureCommand(allocator, io, &.{ "git", "add", "PKGBUILD" }, remote);
-+        try runFixtureCommand(allocator, io, &.{ "git", "commit", "-m", "undeclared lifecycle write fixture" }, remote);
-+        var manager = try initFixtureAurManager(allocator, &paths, paths.remote_root);
-+        defer manager.deinit();
-+        manager.no_check = false;
-+        _ = try manager.cachePkgbase("demo", "demo");
-+        manager.setPkgbuildApprovalHandler(.{ .function = struct {
-+            fn answer(_: ?*anyopaque, _: PkgbuildDiffRequest) bool {
-+                return true;
++    for ([_]enum { native, command, makepkg }{ .native, .command, .makepkg }) |mode| {
++        const command = switch (mode) {
++            .native => null,
++            .command => std.testing.environ.getPosix("AURLENS_TEST_SHELLY_BIN") orelse continue,
++            .makepkg => std.testing.environ.getPosix("AURLENS_TEST_MAKEPKG_BIN") orelse continue,
++        };
++        for ([_]bool{ true, false }) |metadata_write| {
++            var paths = try createAurManagerFixturePaths(allocator, io);
++            defer paths.deinit(allocator);
++            try enableFixtureAurlens(&paths, executable);
++            if (mode == .command) try configureAurlensChildFixture(&paths);
++            try createAurlensPayloadFixture(allocator, io, paths.remote_root);
++            const remote = try std.fs.path.join(allocator, &.{ paths.remote_root, "demo.git" });
++            defer allocator.free(remote);
++            const recipe = try std.fs.path.join(allocator, &.{ remote, "PKGBUILD" });
++            defer allocator.free(recipe);
++            const original = try std.Io.Dir.cwd().readFileAlloc(io, recipe, allocator, .limited(max_file_size));
++            defer allocator.free(original);
++            const mutation = if (metadata_write)
++                "\nprintf 'changed\\n' > \"$startdir/.runtime-write\"\n"
++            else
++                "\nprepare() { cp payload.txt prepared.txt; printf 'changed\\n' > \"$startdir/.runtime-write\"; }\n";
++            const content = try std.fmt.allocPrint(allocator, "{s}{s}", .{ original, mutation });
++            defer allocator.free(content);
++            try writeFixtureFile(io, recipe, content, false);
++            try runFixtureCommand(allocator, io, &.{ "git", "add", "PKGBUILD" }, remote);
++            try runFixtureCommand(allocator, io, &.{ "git", "commit", "-m", "undeclared lifecycle write fixture" }, remote);
++            var manager = try initFixtureAurManager(allocator, &paths, paths.remote_root);
++            defer manager.deinit();
++            if (command) |path| {
++                if (mode == .command) manager.build_command = try allocator.dupe(u8, path) else manager.makepkg_command = try allocator.dupe(u8, path);
 +            }
-+        }.answer });
-+        var prepared = try manager.preparePackageForBuild("demo", null);
-+        defer prepared.deinit(allocator);
-+        try manager.requirePkgbuildApproval(&prepared);
-+        try manager.verifyPreparedPackage(&prepared);
-+        if (metadata_write) {
-+            try std.testing.expectError(error.AurlensVerificationFailed, manager.generateReviewedDependencySrcinfo(&prepared));
-+        } else {
-+            const metadata = try manager.generateReviewedDependencySrcinfo(&prepared);
-+            defer allocator.free(metadata);
++            manager.no_check = false;
++            _ = try manager.cachePkgbase("demo", "demo");
++            manager.setPkgbuildApprovalHandler(.{ .function = struct {
++                fn answer(_: ?*anyopaque, _: PkgbuildDiffRequest) bool {
++                    return true;
++                }
++            }.answer });
++            var prepared = try manager.preparePackageForBuild("demo", null);
++            defer prepared.deinit(allocator);
++            try manager.requirePkgbuildApproval(&prepared);
 +            try manager.verifyPreparedPackage(&prepared);
-+            try std.testing.expectError(error.AurlensVerificationFailed, manager.buildPreparedPackage(&prepared, &.{"demo"}, false));
++            if (metadata_write) {
++                try std.testing.expectError(error.AurlensVerificationFailed, manager.generateReviewedDependencySrcinfo(&prepared));
++            } else {
++                const metadata = try manager.generateReviewedDependencySrcinfo(&prepared);
++                defer allocator.free(metadata);
++                try manager.verifyPreparedPackage(&prepared);
++                try std.testing.expectError(error.AurlensVerificationFailed, manager.buildPreparedPackage(&prepared, &.{"demo"}, false));
++            }
++            const changed = try std.fs.path.join(allocator, &.{ prepared.cache_path, ".runtime-write" });
++            defer allocator.free(changed);
++            const bytes = try std.Io.Dir.cwd().readFileAlloc(io, changed, allocator, .limited(1024));
++            defer allocator.free(bytes);
++            try std.testing.expectEqualStrings("changed\n", bytes);
++            try std.testing.expectError(error.AurlensVerificationFailed, manager.verifyPreparedPackage(&prepared));
 +        }
-+        const changed = try std.fs.path.join(allocator, &.{ prepared.cache_path, ".runtime-write" });
-+        defer allocator.free(changed);
-+        const bytes = try std.Io.Dir.cwd().readFileAlloc(io, changed, allocator, .limited(1024));
-+        defer allocator.free(bytes);
-+        try std.testing.expectEqualStrings("changed\n", bytes);
-+        try std.testing.expectError(error.AurlensVerificationFailed, manager.verifyPreparedPackage(&prepared));
 +    }
 +}
 +
@@ -844,4 +1089,360 @@
 +    const metadata = try manager.generateReviewedDependencySrcinfo(&prepared);
 +    defer allocator.free(metadata);
 +    try std.testing.expect(std.mem.indexOf(u8, metadata, "pkgname = demo") != null);
++}
+--- a/Shelly.PackageManager/src/aur/builder.zig
++++ b/Shelly.PackageManager/src/aur/builder.zig
+@@ -747,7 +747,7 @@
+ }
+ 
+ pub fn isPackageArchiveArtifact(file_name: []const u8) bool {
+-    return std.mem.indexOf(u8, file_name, ".pkg.tar.") != null;
++    return std.mem.indexOf(u8, file_name, ".pkg.tar.") != null or std.mem.endsWith(u8, file_name, ".pkg.tar");
+ }
+ 
+ pub fn deinitPaths(allocator: std.mem.Allocator, paths: []const []u8) void {
+@@ -1088,6 +1088,8 @@
+     try std.testing.expectEqual(@as(usize, 0), no_match.len);
+ 
+     try std.testing.expect(isBuiltPackageFile("demo.pkg.tar.zst"));
++    try std.testing.expect(isBuiltPackageFile("demo.pkg.tar"));
++    try std.testing.expect(!isBuiltPackageFile("demo.pkg.tar.sig"));
+     try std.testing.expect(!isBuiltPackageFile("demo.pkg.tar.zst.sig"));
+     try std.testing.expect(isPackageArchiveArtifact("demo.pkg.tar.zst.sig"));
+ }
+--- a/Shelly.PackageManager/src/aur/builder/builder.zig
++++ b/Shelly.PackageManager/src/aur/builder/builder.zig
+@@ -7,6 +7,7 @@
+ const user_errors = @import("../../shared/user_errors.zig");
+ const builtin = @import("builtin");
+ pub const ShellyBuildConfiguration = @import("../shellybuild.zig").ShellyBuildConfiguration;
++pub const build_destinations = @import("../build_destinations.zig");
+ const pkgbuild_parser = @import("../../pkgbuild/pkgbuild_parser.zig");
+ const pkgbuild_execution = @import("../../pkgbuild/parser/execution.zig");
+ const PackageBuild = pkgbuild_parser.Pkgbuild;
+@@ -37,6 +38,7 @@
+ pub const setNoNewPrivs = security.setNoNewPrivs;
+ 
+ test {
++    _ = build_destinations;
+     _ = @import("source_spec.zig");
+     _ = @import("checksums.zig");
+     _ = checksum_update;
+--- a/Shelly.Cli.Zig/src/commands/builder.zig
++++ b/Shelly.Cli.Zig/src/commands/builder.zig
+@@ -10,6 +10,7 @@
+ const standard_single_pane = @import("../output/standard_single_pane.zig");
+ const ui_operation = @import("../output/ui_operation.zig");
+ const ShellyBuildConfiguration = PackageManager.builder.ShellyBuildConfiguration;
++const build_destinations = PackageManager.builder.build_destinations;
+ const aur_url = @import("../config/aur_url.zig");
+ const isolated_build = @import("isolated_build.zig");
+ const source_pgp_transport = @import("source_pgp_transport.zig");
+@@ -430,6 +431,7 @@
+     var arguments: std.ArrayList([]const u8) = .empty;
+     defer arguments.deinit(allocator);
+     try arguments.appendSlice(allocator, &.{ "build", "--prepare-isolated-source-keys", "--review-digest", digest_hex });
++    try appendDestinationArguments(allocator, &arguments, invocation);
+     if (invocation.globals.no_confirm) try arguments.append(allocator, "--no-confirm");
+     for (invocation.options) |option| {
+         if (std.mem.eql(u8, option.name, "--package"))
+@@ -540,6 +542,7 @@
+     var arguments: std.ArrayList([]const u8) = .empty;
+     defer arguments.deinit(allocator);
+     try arguments.appendSlice(allocator, &.{ "build", "--coordinator-child", "--no-confirm", "--apply-pkgver", version, "--pkgver-original-sha256", original_hash, "--review-digest", review_digest });
++    try appendDestinationArguments(allocator, &arguments, invocation);
+     for (invocation.options) |option| {
+         if (!std.mem.eql(u8, option.name, "--package")) continue;
+         try arguments.appendSlice(allocator, &.{ "--package", option.value orelse return error.MissingPackageName });
+@@ -659,6 +662,12 @@
+     for (request.package_builds, requested_names) |package_build, *name|
+         name.* = package_build.pkg_name orelse return trackReturnError(error.MissingPackageName, &returned_error);
+ 
++    const outputs = try resolveBuildOutputs(context, request.shellybuild, invocation, request.build_directory, try packageBaseFromBuilds(request.package_builds), .review);
++    defer context.allocator.free(outputs.work);
++    const separate_work = !std.mem.eql(u8, outputs.work, request.build_directory);
++    try ensureConfiguredWorkDirectory(context.io, separate_work, outputs.work);
++    defer if (separate_work) std.Io.Dir.cwd().deleteTree(context.io, outputs.work) catch {};
++
+     const builder = try trackReturnError(PackageBuilder.init(
+         context.allocator,
+         request.package_builds,
+@@ -667,10 +676,10 @@
+         requested_names,
+         .{
+             .start_directory = request.build_directory,
+-            .work_directory = request.build_directory,
++            .work_directory = outputs.work,
+             .package_destination = request.package_destination,
+-            .source_destination = request.build_directory,
+-            .log_destination = request.build_directory,
++            .source_destination = outputs.sources,
++            .log_destination = outputs.logs,
+             .pkgbuild_path = request.pkgbuild_path,
+             .native_database = .{ .config_path = context.config_path, .backend = PackageManager.Manager.defaultBackend() },
+             .clean_after_success = true,
+@@ -964,6 +973,7 @@
+         for (@import("../cli/catalog/builder.zig").variants[0].options) |build_option| {
+             if (std.mem.eql(u8, option.name, build_option.name)) break;
+         } else continue; // Global configuration and output options are valid.
++        if (isDestinationOption(option.name)) continue;
+         for ([_][]const u8{
+             "--makesrcinfo", "--metadata-only", "--reviewed", "--review-digest",
+         }) |allowed| {
+@@ -1115,12 +1125,8 @@
+             requested_names[0];
+         // Source preparation replaces src/: always isolate metadata work from
+         // any existing build tree, even without a configured build root.
+-        const work_directory = try PackageManager.builder.uniqueWorkDirectory(
+-            context.allocator,
+-            context.io,
+-            request.shellybuild.destinations.build orelse request.build_directory,
+-            package_base,
+-        );
++        const outputs = try resolveBuildOutputs(context, request.shellybuild, invocation, request.build_directory, package_base, .metadata);
++        const work_directory = outputs.work;
+         defer context.allocator.free(work_directory);
+         try std.Io.Dir.cwd().createDirPath(context.io, work_directory);
+         defer std.Io.Dir.cwd().deleteTree(context.io, work_directory) catch {};
+@@ -1141,9 +1147,9 @@
+             .{
+                 .start_directory = request.build_directory,
+                 .work_directory = work_directory,
+-                .package_destination = request.build_directory,
+-                .source_destination = request.shellybuild.destinations.sources orelse request.build_directory,
+-                .log_destination = request.build_directory,
++                .package_destination = outputs.packages,
++                .source_destination = outputs.sources,
++                .log_destination = outputs.logs,
+                 .pkgbuild_path = staged_path orelse request.pkgbuild_path,
+                 .native_database = .{ .config_path = context.config_path, .backend = PackageManager.Manager.defaultBackend() },
+                 .clean_after_success = true,
+@@ -1402,19 +1408,10 @@
+             return err;
+         };
+         defer review.deinit();
+-        const package_destination = if (optionValue(invocation, "--package-destination")) |path| blk: {
++        if (optionValue(invocation, build_destinations.Role.package.flag())) |path|
+             try validatePackageDestination(path);
+-            break :blk path;
+-        } else shellybuild.destinations.packages orelse build_directory;
+-        const work_directory = if (shellybuild.destinations.build) |build_root|
+-            try PackageManager.builder.uniqueWorkDirectory(
+-                context.allocator,
+-                context.io,
+-                build_root,
+-                initial_package_base,
+-            )
+-        else
+-            try context.allocator.dupe(u8, build_directory);
++        const outputs = try resolveBuildOutputs(context, shellybuild, invocation, build_directory, initial_package_base, .build);
++        const work_directory = outputs.work;
+         defer context.allocator.free(work_directory);
+         const ephemeral_work_directory = shellybuild.destinations.build != null;
+         try ensureConfiguredWorkDirectory(context.io, ephemeral_work_directory, work_directory);
+@@ -1428,9 +1425,9 @@
+             .{
+                 .start_directory = build_directory,
+                 .work_directory = work_directory,
+-                .package_destination = package_destination,
+-                .source_destination = shellybuild.destinations.sources orelse build_directory,
+-                .log_destination = shellybuild.destinations.logs orelse build_directory,
++                .package_destination = outputs.packages,
++                .source_destination = outputs.sources,
++                .log_destination = outputs.logs,
+                 .pkgbuild_path = pkgbuild_path,
+                 .native_database = .{ .config_path = context.config_path, .backend = PackageManager.Manager.defaultBackend() },
+                 .clean_after_success = !optionEnabled(invocation, "--keep-workdirs"),
+@@ -2058,12 +2055,17 @@
+             continue;
+         }
+         if (std.mem.startsWith(u8, argument, "--dependency-plan=")) continue;
+-        if (std.mem.eql(u8, argument, "--package-destination")) {
+-            if (index + 1 >= arguments.len) return error.MissingPackageDestination;
+-            index += 1;
+-            continue;
+-        }
+-        if (std.mem.startsWith(u8, argument, "--package-destination=")) continue;
++        var host_destination = false;
++        inline for (build_destinations.roles) |role| {
++            if (std.mem.eql(u8, argument, role.flag())) {
++                if (index + 1 >= arguments.len) return error.MissingPackageDestination;
++                index += 1;
++                host_destination = true;
++            } else if (std.mem.startsWith(u8, argument, (comptime role.flag()) ++ "=")) {
++                host_destination = true;
++            }
++        }
++        if (host_destination) continue;
+         if (positional_index != null and positional_index.? == index) continue;
+         try result.append(allocator, argument);
+     }
+@@ -2897,7 +2899,48 @@
+     const configuration = try ShellyBuildConfiguration.init(context.io, context.allocator, context.environ);
+     errdefer configuration.deinit();
+     try applyCompressionOverride(configuration, invocation);
++    if (optionValue(invocation, build_destinations.Role.package.flag())) |path|
++        try validatePackageDestination(path);
++    try build_destinations.applyOverrides(configuration, .{
++        .build = optionValue(invocation, build_destinations.Role.build.flag()),
++        .sources = optionValue(invocation, build_destinations.Role.source.flag()),
++        .packages = optionValue(invocation, build_destinations.Role.package.flag()),
++        .logs = optionValue(invocation, build_destinations.Role.log.flag()),
++    });
+     return configuration;
++}
++
++fn isDestinationOption(name: []const u8) bool {
++    inline for (build_destinations.roles) |role| {
++        if (std.mem.eql(u8, name, role.flag())) return true;
++    }
++    return false;
++}
++
++const OutputPurpose = enum { build, metadata, review };
++
++fn resolveBuildOutputs(context: *runtime.RuntimeContext, configuration: *const ShellyBuildConfiguration, invocation: *const parser.Invocation, recipe: []const u8, package_base: []const u8, purpose: OutputPurpose) !build_destinations.Resolved {
++    var explicit = false;
++    inline for (build_destinations.roles) |role| {
++        explicit = explicit or optionValue(invocation, role.flag()) != null;
++    }
++    const separate_work = purpose == .metadata or (configuration.destinations.build != null and (purpose != .review or explicit));
++    return .{
++        .work = if (separate_work)
++            try PackageManager.builder.uniqueWorkDirectory(context.allocator, context.io, configuration.destinations.build orelse recipe, package_base)
++        else
++            try context.allocator.dupe(u8, recipe),
++        .packages = if (purpose == .metadata and !explicit) recipe else configuration.destinations.packages orelse recipe,
++        .sources = if (purpose == .review and !explicit) recipe else configuration.destinations.sources orelse recipe,
++        .logs = if (purpose != .build and !explicit) recipe else configuration.destinations.logs orelse recipe,
++    };
++}
++
++fn appendDestinationArguments(allocator: std.mem.Allocator, arguments: *std.ArrayList([]const u8), invocation: *const parser.Invocation) !void {
++    inline for (build_destinations.roles) |role| {
++        if (optionValue(invocation, role.flag())) |value|
++            try arguments.appendSlice(allocator, &.{ role.flag(), value });
++    }
+ }
+ 
+ fn writeDependencyResolutionError(writer: *std.Io.Writer, err: anyerror) !void {
+@@ -3248,6 +3291,7 @@
+     var arguments: std.ArrayList([]const u8) = .empty;
+     defer arguments.deinit(allocator);
+     try arguments.appendSlice(allocator, &.{ "build", "--review-only", "--review-dependencies", "--json", "--no-confirm" });
++    try appendDestinationArguments(allocator, &arguments, invocation);
+     if (dependency_mode == .host) {
+         try arguments.append(allocator, "--review-host-dependencies");
+     } else {
+@@ -4937,26 +4981,59 @@
+     try std.testing.expect(!containsString(isolated, "--review-host-dependencies"));
+ }
+ 
+-test "isolated argument rewriting removes JSON and both package destination spellings" {
++test "isolated child arguments remove every host destination in both spellings" {
+     const allocator = std.testing.allocator;
+     const digest = "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a";
+-    const separate = [_][]const u8{
+-        "build", "--isolated", "--json", "--package-destination", "/host/job", "--no-check", "/host/PKGBUILD",
+-    };
+-    const first = try buildIsolatedChildArguments(allocator, &separate, "/host/PKGBUILD", digest, false);
+-    defer allocator.free(first);
+-    try std.testing.expect(!containsString(first, "--json"));
+-    try std.testing.expect(!containsString(first, "--package-destination"));
+-    try std.testing.expect(!containsString(first, "/host/job"));
+-    try std.testing.expect(containsString(first, "--no-check"));
+-
+-    const joined = [_][]const u8{
+-        "build", "--isolated", "--package-destination=/host/job", "/host/PKGBUILD",
+-    };
+-    const second = try buildIsolatedChildArguments(allocator, &joined, "/host/PKGBUILD", digest, false);
+-    defer allocator.free(second);
+-    for (second) |argument|
+-        try std.testing.expect(!std.mem.startsWith(u8, argument, "--package-destination"));
++    inline for (build_destinations.roles) |role| {
++        const separate = [_][]const u8{
++            "build", "--isolated", "--json", role.flag(), "/host/job", "--no-check", "/host/PKGBUILD",
++        };
++        const first = try buildIsolatedChildArguments(allocator, &separate, "/host/PKGBUILD", digest, false);
++        defer allocator.free(first);
++        try std.testing.expect(!containsString(first, "--json"));
++        try std.testing.expect(!containsString(first, role.flag()));
++        try std.testing.expect(!containsString(first, "/host/job"));
++        try std.testing.expect(containsString(first, "--no-check"));
++
++        const joined = [_][]const u8{
++            "build", "--isolated", (comptime role.flag()) ++ "=/host/job", "/host/PKGBUILD",
++        };
++        const second = try buildIsolatedChildArguments(allocator, &joined, "/host/PKGBUILD", digest, false);
++        defer allocator.free(second);
++        for (second) |argument|
++            try std.testing.expect(!std.mem.startsWith(u8, argument, role.flag()));
++    }
++}
++
++test "isolated child arguments preserve external outputs for every host helper" {
++    const allocator = std.testing.allocator;
++    var arena = std.heap.ArenaAllocator.init(allocator);
++    defer arena.deinit();
++    const manifest = try @import("../cli/spec.zig").Manifest.load(arena.allocator());
++    const outer = try parser.parse(arena.allocator(), &manifest, &.{
++        "build",                 "--isolated",     "--build-destination", "/host/work", "--source-destination", "/host/sources",
++        "--package-destination", "/host/packages", "--log-destination",   "/host/logs", "/host/PKGBUILD",
++    });
++    const digest = "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a";
++    const review = try coordinatorReviewArguments(allocator, &outer.dispatch, "/host/PKGBUILD", .isolated);
++    defer allocator.free(review);
++    const keys = try sourcePgpPreparationArguments(allocator, &outer.dispatch, "/host/PKGBUILD", digest);
++    defer allocator.free(keys);
++    const version = try isolatedPkgverArguments(allocator, &outer.dispatch, "/host/PKGBUILD", "2", digest, digest);
++    defer allocator.free(version);
++    for ([_][]const []const u8{ review, keys, version }) |arguments| {
++        const child = try parser.parse(arena.allocator(), &manifest, arguments);
++        inline for (build_destinations.roles) |role| {
++            try std.testing.expectEqualStrings(optionValue(&outer.dispatch, role.flag()).?, optionValue(&child.dispatch, role.flag()).?);
++        }
++    }
++    var metadata: std.ArrayList([]const u8) = .empty;
++    defer metadata.deinit(allocator);
++    try metadata.appendSlice(allocator, &.{ "build", "--makesrcinfo", "--metadata-only" });
++    try appendDestinationArguments(allocator, &metadata, &outer.dispatch);
++    try metadata.append(allocator, "/host/PKGBUILD");
++    const parsed = try parser.parse(arena.allocator(), &manifest, metadata.items);
++    try std.testing.expectEqual(@as(?[]const u8, null), metadataOnlyConflict(&parsed.dispatch));
+ }
+ 
+ test "review digest exit classification is stable for automation" {
+--- a/Shelly.Cli.Zig/src/cli/catalog/builder.zig
++++ b/Shelly.Cli.Zig/src/cli/catalog/builder.zig
+@@ -1,4 +1,5 @@
+ const types = @import("types.zig");
++const destinations = @import("PackageManager").builder.build_destinations;
+ 
+ const flag = types.flag;
+ const stringOption = types.stringOption;
+@@ -27,7 +28,10 @@
+         hiddenFlag("--review-build-environment", "Includes the complete pinned environment in coordinator review"),
+         flag("--review-only", &.{}, "Reviews evaluated PKGBUILD inputs and emits JSON without building"),
+         stringOption("--review-digest", &.{}, "Requires an accepted 64-character SHA-256 review digest", false),
+-        stringOption("--package-destination", &.{}, "Writes packages to an existing absolute directory", false),
++        stringOption(destinations.Role.package.flag(), &.{}, "Writes packages to an existing absolute directory", false),
++        hiddenStringOption(destinations.Role.build.flag(), "Uses an external build work root"),
++        hiddenStringOption(destinations.Role.source.flag(), "Uses an external source cache"),
++        hiddenStringOption(destinations.Role.log.flag(), "Uses an external build log directory"),
+         stringOption("--compression-level", &.{}, "Selects archive compression preset 1-5: conservative, fast, balanced, compact, maximum; omission uses configured or library defaults", false),
+         flag("--updpkgsums", &.{}, "Updates source checksums in PKGBUILD and regenerates adjacent .SRCINFO"),
+         flag("--makesrcinfo", &.{}, "Generates SRCINFO; when pkgver() exists, prepares sources and updates PKGBUILD version first"),
+@@ -56,3 +60,13 @@
+     },
+     .arguments = &.{types.optionalArgument("pkgbuild", "File path of PKGBUILD. If left empty will look in executed directory for file named PKGBUILD.")},
+ }};
++
++comptime {
++    for (destinations.roles) |role| {
++        var count: usize = 0;
++        for (variants[0].options) |option| {
++            if (@import("std").mem.eql(u8, option.name, role.flag())) count += 1;
++        }
++        if (count != 1) @compileError("Each build destination must have exactly one CLI option");
++    }
 +}

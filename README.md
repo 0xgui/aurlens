@@ -95,6 +95,6 @@ The project-local [verify-aurlens skill](.agents/skills/verify-aurlens/SKILL.md)
 
 Keep the map current as behavior changes with pstack's `maintain-verification-skill` workflow. This does not schedule any recurring work.
 
-The [Shelly integration guide](docs/shelly-integration.md) documents its separate native test driver and current limits. Production integration still needs a recipe workspace that stays stable while Shelly creates build outputs.
+The [Shelly integration guide](docs/shelly-integration.md) documents its separate native test driver and current limits. Production integration still needs trusted settings, elevation and GUI verification, successful chroot and isolated workflows, and upstream support for stock Shelly.
 
 MIT licensed. All scanner rules in this project are original, limited pattern checks, not copied from other scanners.
