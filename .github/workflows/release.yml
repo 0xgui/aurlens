@@ -59,4 +59,9 @@ jobs:
           set -euo pipefail
           test -f "dist/aurlens-$RELEASE_TAG-source.tar.gz"
           (cd dist && sha256sum --check --strict SHA256SUMS)
-          gh release create "$RELEASE_TAG" dist/* --verify-tag --draft --title "AURLens $RELEASE_TAG" --generate-notes
+          if existing="$(gh release view "$RELEASE_TAG" --json isDraft 2>/dev/null)"; then
+            jq -e '.isDraft == true' <<< "$existing"
+            gh release upload "$RELEASE_TAG" dist/* --clobber
+          else
+            gh release create "$RELEASE_TAG" dist/* --verify-tag --draft --title "AURLens $RELEASE_TAG" --generate-notes
+          fi

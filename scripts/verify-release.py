@@ -76,6 +76,9 @@ with tempfile.TemporaryDirectory(prefix="aurlens-release-check-") as scratch:
     assert os.stat(installed).st_mode & 0o777 == 0o755
     header = installed.read_bytes()[:20]
     assert header[:6] == b"\x7fELF\x02\x01" and int.from_bytes(header[18:20], "little") == 62
+    symbols = subprocess.check_output(["readelf", "--version-info", str(installed)])
+    glibc_versions = [tuple(map(int, version.split(b"."))) for version in re.findall(rb"GLIBC_([0-9.]+)", symbols)]
+    assert glibc_versions and max(glibc_versions) <= (2, 35), "Binary needs a newer glibc than the supported minimum"
     assert run(installed, "--version").decode().strip() == "aurlens " + metadata["version"]
     run(installed, "setup", "--help")
     recipe = Path(scratch) / "recipe"
