@@ -62,7 +62,7 @@ A match means the supported contents and modes match the supplied digest. Check 
 
 ## Read the result
 
-The text report separates deterministic findings from AI analysis. `--json` returns schema version 1 with file hashes, a snapshot digest, coverage, findings, change metadata, AI status, and the final decision. Reports contain source excerpts used as evidence. They do not include configured authentication headers, but source excerpts can contain sensitive material. Keep reports private. See [the sensitive-information policy](SECURITY.md).
+The text report separates deterministic findings from AI analysis. `--json` returns schema version 1 with file hashes, a snapshot digest, coverage, findings, change metadata, AI status, and the final decision. With `--json`, standard output is exactly one JSON document followed by a newline. Reports contain source excerpts used as evidence. They do not include configured authentication headers, but source excerpts can contain sensitive material. Keep reports private. See [the sensitive-information policy](SECURITY.md).
 
 | Exit code | Decision | Meaning |
 | --- | --- | --- |
@@ -70,8 +70,13 @@ The text report separates deterministic findings from AI analysis. `--json` retu
 | 1 | `manual_review` | At least one finding needs review. |
 | 2 | `blocked` | At least one blocking pattern was found. |
 | 3 | `incomplete` | Inputs changed, coverage failed, AI failed, or configuration was invalid. |
+| 64 | None | The command line was invalid. No review ran and no report was printed. |
 
 Every nonzero result requires attention. These codes are not a risk ranking. Incomplete reviews retain any findings already observed. Never treat a successful HTTP request or JSON parse as an approval to build.
+
+Usage errors, such as a missing path or an unknown option, print a message to standard error and exit 64. They exited 2 before version 0.2.0, which collided with `blocked`. `--help` and `--version` exit 0.
+
+`aurlens schema review` and `aurlens schema verify` print the JSON Schema (draft 2020-12) of the `scan --json` and `verify --json` reports. The same files are in [`schemas/`](schemas). A later release can add fields without changing the schema version, so ignore fields you do not know.
 
 AURLens reviews all supported files in the checkout, including hidden files, helper scripts, `src`, and `pkg`. Git ignore files do not hide content. Only the actual root `.git` metadata directory is excluded and reported. Binary or unsupported text, symlinks, hardlinks, special files, and exceeded limits make coverage incomplete. Prefer a fresh checkout rather than a directory containing build outputs.
 
@@ -86,6 +91,8 @@ cargo clippy --locked --all-targets -- -D warnings
 ```
 
 Tests use temporary directories and local HTTP fixtures. They do not call a paid model, install a package, or execute a recipe. The CLI and library share one review operation.
+
+The library hosts the command line. The `aurlens` executable only calls `aurlens::cli::run("aurlens", args)`, so another Rust tool can expose the same commands under its own name and parse the JSON reports into the library's types. See [Embed the AURLens CLI](docs/embedding.md). Notable changes are listed in the [changelog](CHANGELOG.md).
 
 The project-local [verify-aurlens skill](.agents/skills/verify-aurlens/SKILL.md) drives scans and snapshot checks through the release CLI and retains commands, text and JSON reports, and fixture evidence. Run its helper with Bash, Python 3, and jq available:
 
