@@ -1,4 +1,4 @@
-use aurlens::{AiResult, ReviewOptions, load_config, review};
+use crate::{AiResult, ReviewOptions, load_config, review};
 use rustix::event::{PollFd, PollFlags, Timespec, poll};
 use rustix::termios::{
     LocalModes, OptionalActions, SpecialCodeIndex, Termios, tcgetattr, tcsetattr,
@@ -15,7 +15,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
-pub fn config_path() -> Result<PathBuf, &'static str> {
+pub(super) fn config_path() -> Result<PathBuf, &'static str> {
     let base = match std::env::var_os("XDG_CONFIG_HOME").filter(|value| !value.is_empty()) {
         Some(base) => PathBuf::from(base),
         None => PathBuf::from(std::env::var_os("HOME").ok_or("Home directory is unavailable.")?)
@@ -27,7 +27,8 @@ pub fn config_path() -> Result<PathBuf, &'static str> {
     Ok(base.join("aurlens/config.toml"))
 }
 
-pub fn run() -> Result<(), String> {
+/// `bin_name` is the command the user typed, so follow-up instructions name it.
+pub(super) fn run(bin_name: &str) -> Result<(), String> {
     println!(
         "Choose your AI connection:\n  1. Codex (use your Codex login)\n  2. API provider\n  3. Local model"
     );
@@ -55,8 +56,9 @@ pub fn run() -> Result<(), String> {
     let mut ai = toml::Table::new();
     let mut key_file = None;
     if choice == "1" {
-        let executable = find_codex()
-            .ok_or("Codex was not found. Install the Codex CLI, then run aurlens setup again.")?;
+        let executable = find_codex().ok_or_else(|| {
+            format!("Codex was not found. Install the Codex CLI, then run {bin_name} setup again.")
+        })?;
         let logged_in = Command::new(&executable)
             .args(["login", "status"])
             .output()
@@ -160,7 +162,7 @@ pub fn run() -> Result<(), String> {
             _ => "connection_test_incomplete".into(),
         };
         return Err(format!(
-            "Connection test failed ({}). Saved connection kept. Run aurlens setup to retry.",
+            "Connection test failed ({}). Saved connection kept. Run {bin_name} setup to retry.",
             reason.escape_debug()
         ));
     }
@@ -178,7 +180,7 @@ pub fn run() -> Result<(), String> {
         }
         return Err("Could not save the configuration.".into());
     }
-    println!("Connection ready. Run: aurlens scan /path/to/package");
+    println!("Connection ready. Run: {bin_name} scan /path/to/package");
     Ok(())
 }
 

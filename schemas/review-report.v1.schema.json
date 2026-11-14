@@ -1,0 +1,244 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AURLens review report, schema version 1",
+  "description": "The document printed by `aurlens scan PATH --json`. Every listed property is always present. A later release may add properties without changing `schema_version`, so consumers must ignore properties they do not know.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "tool_version",
+    "decision",
+    "exit_code",
+    "snapshot_digest",
+    "baseline_digest",
+    "files",
+    "findings",
+    "changes",
+    "coverage",
+    "ai",
+    "revalidated",
+    "notice"
+  ],
+  "properties": {
+    "schema_version": {
+      "description": "The version of this report format.",
+      "const": 1
+    },
+    "tool_version": {
+      "description": "The AURLens version that produced the report.",
+      "type": "string"
+    },
+    "decision": {
+      "description": "The final decision. It combines deterministic findings, AI findings, coverage, and revalidation.",
+      "enum": ["no_findings", "manual_review", "blocked", "incomplete"]
+    },
+    "exit_code": {
+      "description": "The process exit status: 0 for no_findings, 1 for manual_review, 2 for blocked, 3 for incomplete.",
+      "enum": [0, 1, 2, 3]
+    },
+    "snapshot_digest": {
+      "description": "The digest of the reviewed checkout, or null if it could not be captured.",
+      "oneOf": [{ "$ref": "#/$defs/sha256" }, { "type": "null" }]
+    },
+    "baseline_digest": {
+      "description": "The digest of the baseline checkout, or null if none was requested or it could not be captured.",
+      "oneOf": [{ "$ref": "#/$defs/sha256" }, { "type": "null" }]
+    },
+    "files": {
+      "description": "The reviewed files of the current checkout.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/file_summary" }
+    },
+    "findings": {
+      "description": "Deterministic, engine, and AI findings. AI findings are appended and never replace the others.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/finding" }
+    },
+    "changes": {
+      "description": "Differences from the baseline, or null if no baseline was compared.",
+      "oneOf": [
+        { "type": "array", "items": { "$ref": "#/$defs/change" } },
+        { "type": "null" }
+      ]
+    },
+    "coverage": { "$ref": "#/$defs/coverage" },
+    "ai": { "$ref": "#/$defs/ai_result" },
+    "revalidated": {
+      "description": "True if the inputs were captured completely and were unchanged when checked again after analysis.",
+      "type": "boolean"
+    },
+    "notice": {
+      "description": "A reminder of what the report does not certify.",
+      "type": "string"
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "file_summary": {
+      "type": "object",
+      "required": ["path", "mode", "size", "sha256"],
+      "properties": {
+        "path": {
+          "description": "The path relative to the checkout root.",
+          "type": "string"
+        },
+        "mode": {
+          "description": "The permission bits as a number, for example 420 for 0644.",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4095
+        },
+        "size": {
+          "description": "The size of the file text in bytes.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "required": ["path", "line", "quote"],
+      "properties": {
+        "path": {
+          "description": "The path relative to the checkout root.",
+          "type": "string"
+        },
+        "line": {
+          "description": "The line number, starting at 1.",
+          "type": "integer",
+          "minimum": 1
+        },
+        "quote": {
+          "description": "The source excerpt. It can contain sensitive material.",
+          "type": "string"
+        }
+      }
+    },
+    "finding": {
+      "type": "object",
+      "required": ["rule_id", "source", "severity", "message", "evidence"],
+      "properties": {
+        "rule_id": { "type": "string" },
+        "source": {
+          "description": "Where the finding came from. Current values are `deterministic`, `engine`, and `ai`.",
+          "type": "string"
+        },
+        "severity": { "enum": ["info", "review", "block"] },
+        "message": { "type": "string" },
+        "evidence": {
+          "description": "Source locations. Engine findings have none.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/evidence" }
+        }
+      }
+    },
+    "change": {
+      "type": "object",
+      "required": ["path", "kind", "before", "after"],
+      "properties": {
+        "path": {
+          "description": "The path relative to the checkout root.",
+          "type": "string"
+        },
+        "kind": {
+          "description": "The kind of change. Current values are `added`, `deleted`, `modified`, `mode_changed`, and `type_changed`.",
+          "type": "string"
+        },
+        "before": {
+          "description": "A summary of the baseline entry, such as a file hash or a mode, or null if it did not exist.",
+          "type": ["string", "null"]
+        },
+        "after": {
+          "description": "A summary of the current entry, such as a file hash or a mode, or null if it no longer exists.",
+          "type": ["string", "null"]
+        }
+      }
+    },
+    "coverage": {
+      "type": "object",
+      "required": [
+        "complete",
+        "policy",
+        "scope",
+        "reviewed_files",
+        "reviewed_bytes",
+        "excluded",
+        "issues"
+      ],
+      "properties": {
+        "complete": {
+          "description": "True if every input was captured and revalidated without an issue.",
+          "type": "boolean"
+        },
+        "policy": {
+          "description": "The collection policy. The current value is `whole-checkout-v1`.",
+          "type": "string"
+        },
+        "scope": {
+          "description": "A sentence describing what was and was not reviewed.",
+          "type": "string"
+        },
+        "reviewed_files": { "type": "integer", "minimum": 0 },
+        "reviewed_bytes": { "type": "integer", "minimum": 0 },
+        "excluded": {
+          "description": "Paths that were deliberately not reviewed, such as the root `.git` directory.",
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "issues": {
+          "description": "Stable codes for the reasons coverage is incomplete. Empty if coverage is complete.",
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "ai_result": {
+      "description": "The AI review state, selected by `state`.",
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["state", "reason"],
+          "properties": {
+            "state": { "const": "not_run" },
+            "reason": {
+              "description": "A stable code for why no model ran.",
+              "type": "string"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["state", "model", "endpoint_origin", "summary", "findings"],
+          "properties": {
+            "state": { "const": "complete" },
+            "model": { "type": "string" },
+            "endpoint_origin": { "type": "string" },
+            "summary": {
+              "description": "The model's untrusted explanation.",
+              "type": "string"
+            },
+            "findings": {
+              "description": "The AI findings. They also appear in the report's `findings`.",
+              "type": "array",
+              "items": { "$ref": "#/$defs/finding" }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["state", "reason"],
+          "properties": {
+            "state": { "const": "incomplete" },
+            "reason": {
+              "description": "A stable code for why the AI review failed.",
+              "type": "string"
+            }
+          }
+        }
+      ]
+    }
+  }
+}
