@@ -1,6 +1,13 @@
+//! Report and configuration types.
+//!
+//! The report types serialize to the version 1 JSON documents described by the files in
+//! `schemas/`. They also deserialize, so a consumer can parse a report into these types.
+//! Deserialization ignores unknown fields: a later release may add fields without changing
+//! `schema_version`.
+
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Decision {
     NoFindings,
@@ -29,14 +36,13 @@ pub enum Severity {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct Evidence {
     pub path: String,
     pub line: usize,
     pub quote: String,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Finding {
     pub rule_id: String,
     pub source: String,
@@ -84,7 +90,7 @@ pub struct Snapshot {
     pub(crate) ancestry: Vec<(u64, u64)>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Change {
     pub path: String,
     pub kind: String,
@@ -143,7 +149,7 @@ fn default_response_bytes() -> usize {
     131_072
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum AiResult {
     NotRun {
@@ -168,7 +174,7 @@ impl Default for AiResult {
     }
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Coverage {
     pub complete: bool,
     pub policy: String,
@@ -179,7 +185,7 @@ pub struct Coverage {
     pub issues: Vec<String>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct FileSummary {
     pub path: String,
     pub mode: u32,
@@ -187,7 +193,7 @@ pub struct FileSummary {
     pub sha256: String,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ReviewReport {
     pub schema_version: u32,
     pub tool_version: String,
@@ -204,7 +210,7 @@ pub struct ReviewReport {
     pub notice: String,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum VerificationStatus {
     Matched,
@@ -221,7 +227,7 @@ impl VerificationStatus {
     }
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct VerificationReport {
     pub schema_version: u32,
     pub operation: String,

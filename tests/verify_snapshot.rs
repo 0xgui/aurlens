@@ -254,7 +254,8 @@ fn cli_requires_digest_and_has_no_ai_configuration_option() {
         .arg("--json")
         .output()
         .unwrap();
-    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(output.status.code(), Some(64));
+    assert!(output.stdout.is_empty());
     let output = command()
         .arg("verify")
         .arg(root.path())
@@ -267,5 +268,6 @@ fn cli_requires_digest_and_has_no_ai_configuration_option() {
         ])
         .output()
         .unwrap();
-    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(output.status.code(), Some(64));
+    assert!(output.stdout.is_empty());
 }

@@ -1,6 +1,7 @@
 //! A report about a bounded local checkout. Reviewing never executes package code.
 
 mod ai;
+pub mod cli;
 pub mod model;
 mod rules;
 mod snapshot;
@@ -8,11 +9,11 @@ mod snapshot;
 use std::path::{Path, PathBuf};
 
 pub use ai::{AiError, load_config};
+use model::Snapshot;
 pub use model::{
-    AiConfig, AiResult, CodexConfig, Decision, HttpConfig, Limits, ReviewReport, Severity,
-    VerificationReport, VerificationStatus,
+    AiConfig, AiResult, Change, CodexConfig, Coverage, Decision, Evidence, FileSummary, Finding,
+    HttpConfig, Limits, ReviewReport, Severity, VerificationReport, VerificationStatus,
 };
-use model::{Coverage, FileSummary, Finding, Snapshot};
 
 #[derive(Clone, Debug, Default)]
 pub struct ReviewOptions {

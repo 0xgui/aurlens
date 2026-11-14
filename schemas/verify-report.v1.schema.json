@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AURLens snapshot verification report, schema version 1",
+  "description": "The document printed by `aurlens verify PATH --snapshot-digest HEX --json`. Every listed property is always present. A later release may add properties without changing `schema_version`, so consumers must ignore properties they do not know.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "operation",
+    "status",
+    "exit_code",
+    "expected_digest",
+    "snapshot_digest",
+    "issues",
+    "notice"
+  ],
+  "properties": {
+    "schema_version": {
+      "description": "The version of this report format.",
+      "const": 1
+    },
+    "operation": {
+      "description": "Identifies the document as a verification report.",
+      "const": "verify_snapshot"
+    },
+    "status": {
+      "description": "Whether the checkout matches the supplied digest. A match is not a review decision.",
+      "enum": ["matched", "changed", "incomplete"]
+    },
+    "exit_code": {
+      "description": "The process exit status: 0 for matched, 3 for changed or incomplete.",
+      "enum": [0, 3]
+    },
+    "expected_digest": {
+      "description": "The supplied digest, exactly as given. It can be malformed if the status is incomplete.",
+      "type": "string"
+    },
+    "snapshot_digest": {
+      "description": "The captured digest, or null if capture failed or did not start.",
+      "oneOf": [
+        { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        { "type": "null" }
+      ]
+    },
+    "issues": {
+      "description": "Stable failure codes. Empty on a match.",
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "notice": {
+      "description": "Explains the distinction between a match and execution approval.",
+      "type": "string"
+    }
+  }
+}

@@ -290,7 +290,17 @@ struct Opinion {
 struct ModelFinding {
     severity: ModelSeverity,
     message: String,
-    evidence: Vec<Evidence>,
+    evidence: Vec<ModelEvidence>,
+}
+
+/// The strict wire form of model evidence. Report evidence tolerates unknown fields for
+/// consumers; a model response does not.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ModelEvidence {
+    path: String,
+    line: usize,
+    quote: String,
 }
 
 #[derive(Deserialize)]
@@ -552,7 +562,15 @@ fn run(
                 ModelSeverity::Block => Severity::Block,
             },
             message: finding.message,
-            evidence: finding.evidence,
+            evidence: finding
+                .evidence
+                .into_iter()
+                .map(|evidence| Evidence {
+                    path: evidence.path,
+                    line: evidence.line,
+                    quote: evidence.quote,
+                })
+                .collect(),
         })
         .collect();
     Ok(AiResult::Complete {
@@ -851,6 +869,12 @@ mod tests {
         extra["safe"] = json!(true);
         assert_eq!(
             check_body(&envelope(&extra.to_string())),
+            "ai_opinion_format"
+        );
+        let mut extra_evidence = opinion();
+        extra_evidence["findings"][0]["evidence"][0]["trusted"] = json!(true);
+        assert_eq!(
+            check_body(&envelope(&extra_evidence.to_string())),
             "ai_opinion_format"
         );
         for (field, value, expected) in [

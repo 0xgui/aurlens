@@ -1,6 +1,6 @@
 # Snapshot verification protocol
 
-`aurlens verify PATH --snapshot-digest HEX [--json]` compares a local checkout with a digest from `scan`. `HEX` is exactly 64 lowercase hexadecimal characters. Invalid digests produce an incomplete report before filesystem traversal. Missing required arguments remain CLI usage errors.
+`aurlens verify PATH --snapshot-digest HEX [--json]` compares a local checkout with a digest from `scan`. `HEX` is exactly 64 lowercase hexadecimal characters. Invalid digests produce an incomplete report before filesystem traversal. Missing required arguments are CLI usage errors: they print a message to standard error, print no report, and exit 64.
 
 Verification uses the existing `whole-checkout-v1` collector and default limits. It captures supported contents and modes, then recaptures to check stability, inode identities, and ancestor identities within the verification process. It compares the portable digest with the caller's value. The original scan's inode identities are not part of that portable value.
 
@@ -16,6 +16,8 @@ The JSON report has these fields:
 | `snapshot_digest` | The captured digest, or `null` if capture failed. A failed revalidation can retain this value. |
 | `issues` | Stable failure codes. Empty on a match. |
 | `notice` | Explains the distinction between a match and execution approval. |
+
+`aurlens schema verify` prints the JSON Schema of this report. The same file is [`schemas/verify-report.v1.schema.json`](../schemas/verify-report.v1.schema.json).
 
 The command does not analyze patterns, invoke a model, load configuration, or execute recipes. A digest match can describe a recipe whose initial review was blocked. Consumers must check the initial review's decision, complete coverage, revalidation, requested AI state, and process exit status independently.
 
