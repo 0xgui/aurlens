@@ -4,6 +4,7 @@
 
 ### Added
 
+- Every report carries a grade, `risk`, for the review and for each finding: `low`, `medium`, `high`, `critical`, or `unknown` when the review is incomplete. The text report prints it as advice: "Looks fine", "Check first", "Be careful", "Do not install", "Could not check". It is computed from the rules; a model's finding is `medium` and cannot lower it. See [rules and severities](docs/rules.md#advice).
 - Rules for high-risk behaviour. `REVERSE-SHELL` blocks. `RAW-SOCKET`, `SETUID`, `PRIVILEGE-CONFIG`, `STARTUP-FILE`, `CREDENTIAL-STORE`, `DROP-HOST`, `NUMERIC-HOST`, `PACKAGE-MANAGER`, `DISABLE-PROTECTION`, `DESTRUCTIVE`, `BUILD-DOWNLOAD`, `OUTSIDE-WRITE`, `INSTALL-DOWNLOAD`, `INSTALL-WRITE`, `PACKAGE-TRUST`, `ACCOUNT`, `SCRIPT-DOWNLOAD` and `PIPED-SHELL` need review. `INSTALL-SERVICE`, `SANDBOX-HELPER` and `PRELOAD` are informational. See [rules and severities](docs/rules.md).
 - AI findings can have severity `info`. Such a finding is listed and does not change the decision. The instructions sent to the model now say what each severity is for, so a remark about packaging style no longer asks for a manual review.
 

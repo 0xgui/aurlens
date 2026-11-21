@@ -31,6 +31,10 @@
       "description": "The final decision. It combines deterministic findings, AI findings, coverage, and revalidation.",
       "enum": ["no_findings", "manual_review", "blocked", "incomplete"]
     },
+    "risk": {
+      "description": "How much the findings should weigh with the person deciding: the highest risk among them, or `unknown` when the review is incomplete. `low`: nothing found, or notes only. `medium`: something legitimate recipes also do. `high`: the package takes root-level or lasting power, reaches for credentials, or hides what it runs. `critical`: blocked. A reading of the recipe, not of the software it downloads.",
+      "enum": ["low", "medium", "high", "critical", "unknown"]
+    },
     "exit_code": {
       "description": "The process exit status: 0 for no_findings, 1 for manual_review, 2 for blocked, 3 for incomplete.",
       "enum": [0, 1, 2, 3]
@@ -131,6 +135,10 @@
           "type": "string"
         },
         "severity": { "enum": ["info", "review", "block"] },
+        "risk": {
+          "description": "`low` for a note, `critical` for a block, `medium` or `high` for a review finding by its rule. A model's review finding is `medium`.",
+          "enum": ["low", "medium", "high", "critical", "unknown"]
+        },
         "message": { "type": "string" },
         "evidence": {
           "description": "Source locations. Engine findings have none.",

@@ -268,6 +268,7 @@ fn config_error(code: &str, json: bool) -> ExitCode {
         schema_version: 1,
         tool_version: env!("CARGO_PKG_VERSION").into(),
         decision: crate::Decision::Incomplete,
+        risk: crate::Risk::Unknown,
         exit_code: 3,
         snapshot_digest: None,
         baseline_digest: None,
@@ -300,8 +301,28 @@ fn config_error(code: &str, json: bool) -> ExitCode {
 }
 
 fn render(report: &crate::ReviewReport) -> String {
+    let graded: Vec<&str> = report
+        .findings
+        .iter()
+        .filter(|finding| finding.risk == report.risk && finding.risk != crate::Risk::Low)
+        .map(|finding| finding.rule_id.as_str())
+        .collect();
     let mut lines = vec![
         format!("AURLens: {:?}", report.decision),
+        if graded.is_empty() {
+            format!(
+                "Advice: {}. {}",
+                report.risk.advice(),
+                report.risk.meaning()
+            )
+        } else {
+            format!(
+                "Advice: {} ({}). {}",
+                report.risk.advice(),
+                graded.join(", ").escape_debug(),
+                report.risk.meaning()
+            )
+        },
         format!(
             "Reviewed {} files ({} bytes).",
             report.coverage.reviewed_files, report.coverage.reviewed_bytes

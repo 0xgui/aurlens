@@ -8,6 +8,22 @@ Every finding has one of three severities. The severity is the whole policy: it 
 | `review` | A concrete security risk that a person has to decide about. | `manual_review` |
 | `info` | Worth a line in the report. | None. The finding is listed and the decision is unchanged. |
 
+## Advice
+
+Every report also carries one word of advice, `risk` in the JSON. The decision says what has to happen; the advice says how hard to look.
+
+| Advice | `risk` | When | Decision |
+| --- | --- | --- | --- |
+| Looks fine | `low` | Nothing found, or notes only. | `no_findings` |
+| Check first | `medium` | A `review` finding of a kind legitimate recipes also have: an unverified or unencrypted download, a download during the build, `eval`, a file nobody read, a model's opinion. | `manual_review` |
+| Be careful | `high` | A `review` finding that gives the package root-level or lasting power, reaches for credentials, or hides what runs. Marked **high** in the table below. | `manual_review` |
+| Do not install | `critical` | A `block` finding. | `blocked` |
+| Could not check | `unknown` | The review is incomplete. | `incomplete` |
+
+The review's advice is the highest among its findings, and each finding carries its own `risk`. A model's `review` finding is always `medium`: it is an opinion, and when a model thinks something has no honest use it says `block`. A model cannot lower the advice.
+
+"Looks fine" is about the recipe. It says nothing about the software the recipe downloads, which no rule reads.
+
 Rules are text patterns over one line. They do not parse or run shell, so they can be evaded and they can match harmless text. [The threat model](threat-model.md) states the limits.
 
 ## Where a rule looks
@@ -63,33 +79,35 @@ A line that matches a `block` rule is reported for that rule alone.
 
 ## Review
 
+A rule marked **High** gives the advice "Be careful"; the others give "Check first". A `block` rule that matches printed text (see above) is reported here as high.
+
 | Rule | Looks in | Matches |
 | --- | --- | --- |
 | `DYNAMIC-EVAL` | Scripts | `eval`. |
-| `PIPED-SHELL` | Scripts | Anything else piped into a shell: a `|` with a space on either side of it, then a shell's name as a word. `bash|zsh)` in a `case` and `"bash|sh"` in a pattern are not pipes. |
-| `PRIVILEGE` | Scripts, commands, command start | `sudo`, `doas`, `pkexec`, `run0`, or `su` with an option. |
+| `PIPED-SHELL` | Scripts | **High.** Anything else piped into a shell: a `|` with a space on either side of it, then a shell's name as a word. `bash|zsh)` in a `case` and `"bash|sh"` in a pattern are not pipes. |
+| `PRIVILEGE` | Scripts, commands, command start | **High.** `sudo`, `doas`, `pkexec`, `run0`, or `su` with an option. |
 | `SKIPPED-CHECKSUM` | Recipe | A `SKIP` checksum for a source that nothing else verifies. See below. |
 | `PLAIN-HTTP` | Scripts, commands | An `http://` URL. Not in `url=` or `pkgdesc=`, not an XML namespace, not the local machine. |
-| `PROMPT-INJECTION` | Everything, comments included | Text addressed to an AI reviewer. |
-| `RAW-SOCKET` | Code | A connection through the shell's `/dev/tcp` or `/dev/udp`. |
-| `SETUID` | Code | `chmod` with a setuid or setgid mode, in octal (`4755`, `04755`) or symbols (`u+s`, `u=rwxs`); `install` with such a mode (`-m4755`, `--mode=4755`); `setcap`. Not a directory created setgid, and not `g+s` on a directory under `/var`. |
-| `PRIVILEGE-CONFIG` | Code | sudoers, `doas.conf`, PAM or polkit rules. |
-| `STARTUP-FILE` | Code, commands | A user's shell startup or autostart file, or `/etc/ld.so.preload`. |
-| `CREDENTIAL-STORE` | Code, commands | Where browsers, password managers and developer tools keep credentials. |
-| `DROP-HOST` | Code | A paste, file-drop, webhook or tunnel service, as a host: after `://`, or followed by `/`. A file called `temp.sh` is not the host. |
+| `PROMPT-INJECTION` | Everything, comments included | **High.** Text addressed to an AI reviewer. |
+| `RAW-SOCKET` | Code | **High.** A connection through the shell's `/dev/tcp` or `/dev/udp`. |
+| `SETUID` | Code | **High.** `chmod` with a setuid or setgid mode, in octal (`4755`, `04755`) or symbols (`u+s`, `u=rwxs`); `install` with such a mode (`-m4755`, `--mode=4755`); `setcap`. Not a directory created setgid, and not `g+s` on a directory under `/var`. |
+| `PRIVILEGE-CONFIG` | Code | **High.** sudoers, `doas.conf`, PAM or polkit rules. |
+| `STARTUP-FILE` | Code, commands | **High.** A user's shell startup or autostart file, or `/etc/ld.so.preload`. |
+| `CREDENTIAL-STORE` | Code, commands | **High.** Where browsers, password managers and developer tools keep credentials. |
+| `DROP-HOST` | Code | **High.** A paste, file-drop, webhook or tunnel service, as a host: after `://`, or followed by `/`. A file called `temp.sh` is not the host. |
 | `NUMERIC-HOST` | Code | A URL with a numeric address. Not the local machine or a private network. |
-| `PACKAGE-MANAGER` | Scripts, commands, command start | pacman or an AUR helper installing, upgrading or removing. Not a query that changes nothing (`-Si`, `-Ss`, `-Q…`); `-Syi` refreshes the databases and is reported. |
-| `PACKAGE-TRUST` | Scripts, commands | `pacman-key` adding, importing or signing keys; `/etc/pacman.conf`, `/etc/pacman.d/` (not a file placed under `$pkgdir`); `SigLevel`. |
-| `ACCOUNT` | Scripts, commands | An account added to `wheel`, `sudo`, `root`, `adm` or `docker`; a user created with uid 0 or a duplicate uid; `chpasswd`; `passwd` run as a command (`getent passwd name` is a lookup). |
-| `DISABLE-PROTECTION` | Code, commands | A firewall, SELinux, AppArmor, auditing or a kernel hardening setting switched off. |
-| `DESTRUCTIVE` | Scripts, commands, command start | `rm` with options aimed at `/`, a top-level system directory or a home directory; `dd` onto a disk; `mkfs`, `wipefs`, `shred`. |
+| `PACKAGE-MANAGER` | Scripts, commands, command start | **High.** pacman or an AUR helper installing, upgrading or removing. Not a query that changes nothing (`-Si`, `-Ss`, `-Q…`); `-Syi` refreshes the databases and is reported. |
+| `PACKAGE-TRUST` | Scripts, commands | **High.** `pacman-key` adding, importing or signing keys; `/etc/pacman.conf`, `/etc/pacman.d/` (not a file placed under `$pkgdir`); `SigLevel`. |
+| `ACCOUNT` | Scripts, commands | **High.** An account added to `wheel`, `sudo`, `root`, `adm` or `docker`; a user created with uid 0 or a duplicate uid; `chpasswd`; `passwd` run as a command (`getent passwd name` is a lookup). |
+| `DISABLE-PROTECTION` | Code, commands | **High.** A firewall, SELinux, AppArmor, auditing or a kernel hardening setting switched off. |
+| `DESTRUCTIVE` | Scripts, commands, command start | **High.** `rm` with options aimed at `/`, a top-level system directory or a home directory; `dd` onto a disk; `mkfs`, `wipefs`, `shred`. |
 | `BUILD-DOWNLOAD` | Recipe, commands, command start | `curl`, `wget` or `aria2c`; `git clone` of a URL; an interpreter's one-liner that names a URL or `urlopen`. |
 | `OUTSIDE-WRITE` | Recipe, commands | A redirect or `tee` into a system directory instead of the package directory. Not the body of a here-document that `cat` or `tee` writes to a file. |
-| `INSTALL-DOWNLOAD` | Install script, commands, command start | A download, or a language package manager, run as root at install time. |
-| `INSTALL-WRITE` | Install script, commands | A redirect, `tee` or `sed -i` into `/etc`, `/usr`, `/root` or `/boot`; standard output redirected to a path held in a variable; `cp`, `mv`, `ln` or `install` into the places that are read at login, at boot or by pacman (`/etc/profile.d`, udev rules, cron, `ld.so.conf`, ssh, alpm hooks, `/root/.ssh`); `authorized_keys`; `sshd_config`. |
+| `INSTALL-DOWNLOAD` | Install script, commands, command start | **High.** A download, or a language package manager, run as root at install time. |
+| `INSTALL-WRITE` | Install script, commands | **High.** A redirect, `tee` or `sed -i` into `/etc`, `/usr`, `/root` or `/boot`; standard output redirected to a path held in a variable; `cp`, `mv`, `ln` or `install` into the places that are read at login, at boot or by pacman (`/etc/profile.d`, udev rules, cron, `ld.so.conf`, ssh, alpm hooks, `/root/.ssh`); `authorized_keys`; `sshd_config`. |
 | `SCRIPT-DOWNLOAD` | Helper, commands, command start | `curl`, `wget` or `aria2c` in a script that comes with the recipe. |
 | `OPAQUE-FILE` | The checkout | An image, a PDF or a binary key, when it is new or has changed since the baseline. |
-| `OPAQUE-RUN` | Scripts | Such a file handed to an interpreter, sourced, made executable, installed with an executable mode, or installed into a `bin` directory, under a script or settings name, or where the system reads scripts and settings (`profile.d`, alpm hooks, systemd, udev, cron). Piped into a shell, or named by `install=`, it blocks. |
+| `OPAQUE-RUN` | Scripts | **High.** Such a file handed to an interpreter, sourced, made executable, installed with an executable mode, or installed into a `bin` directory, under a script or settings name, or where the system reads scripts and settings (`profile.d`, alpm hooks, systemd, udev, cron). Piped into a shell, or named by `install=`, it blocks. |
 
 ## Info
 

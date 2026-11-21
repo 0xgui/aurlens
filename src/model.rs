@@ -35,6 +35,74 @@ pub enum Severity {
     Block,
 }
 
+/// How much a finding, or a whole review, should weigh with the person
+/// deciding. It is a reading of the findings, not of the package: `low`
+/// says nothing was found in the recipe, not that the software is safe.
+///
+/// The decision says what has to happen (nothing, a person's yes, a stop).
+/// The risk says how hard to look.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Risk {
+    /// Nothing found, or notes only.
+    Low,
+    /// Something a person has to decide about, of a kind that legitimate
+    /// recipes also do: an unverified download, an unencrypted source, a
+    /// file nobody read.
+    Medium,
+    /// The package takes root-level or lasting power, or reaches for
+    /// credentials: a setuid file, a write to the system as root, sudoers,
+    /// accounts, pacman's trust, a startup file.
+    High,
+    /// Behaviour with no honest use in a recipe. The review is blocked.
+    Critical,
+    /// The review could not be completed, so there is nothing to grade.
+    #[default]
+    Unknown,
+}
+
+impl Risk {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+            Self::Critical => "critical",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    /// The grade as advice, in two or three words.
+    pub fn advice(self) -> &'static str {
+        match self {
+            Self::Low => "Looks fine",
+            Self::Medium => "Check first",
+            Self::High => "Be careful",
+            Self::Critical => "Do not install",
+            Self::Unknown => "Could not check",
+        }
+    }
+
+    /// What the advice rests on, in one sentence.
+    pub fn meaning(self) -> &'static str {
+        match self {
+            Self::Low => {
+                "Nothing in the recipe needs a decision. That says nothing about the software it downloads."
+            }
+            Self::Medium => {
+                "The recipe does something a person should look at, of a kind legitimate recipes also do."
+            }
+            Self::High => {
+                "The package takes root-level or lasting power, reaches for credentials, or hides what it runs. Install it only if you trust where it comes from."
+            }
+            Self::Critical => "The recipe does something with no honest use in a package.",
+            Self::Unknown => {
+                "The review could not be completed, so nothing can be said about the recipe."
+            }
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Evidence {
     pub path: String,
@@ -49,6 +117,9 @@ pub struct Finding {
     pub severity: Severity,
     pub message: String,
     pub evidence: Vec<Evidence>,
+    /// Set when the report is assembled, from the rule and the severity.
+    #[serde(default)]
+    pub risk: Risk,
 }
 
 #[derive(Clone, Debug)]
@@ -215,6 +286,9 @@ pub struct ReviewReport {
     pub schema_version: u32,
     pub tool_version: String,
     pub decision: Decision,
+    /// The highest risk among the findings; `unknown` when incomplete.
+    #[serde(default)]
+    pub risk: Risk,
     pub exit_code: u8,
     pub snapshot_digest: Option<String>,
     pub baseline_digest: Option<String>,
