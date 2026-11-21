@@ -25,16 +25,29 @@ Whole-line shell comments are skipped unless the rule says otherwise.
 
 A rule marked **commands** in the tables skips a line that only prints text, such as `echo "now run: pacman -S foo"`. A line is printed text when:
 
-- its first word is `echo`, `printf`, `msg`, `msg2`, `warning`, `error`, `plain` or `note`, or it continues a quoted message that such a line left open; and
+- its first word is `echo`, `printf`, `msg`, `msg2`, `warning`, `error` or `plain`, or it continues a quoted message that such a line left open; and
 - outside quotes it has none of `|`, `` ` ``, `>`, `<`, `;`, `&`, `(`, `)`; and
 - it has no `$(…)`, no backtick, no `$'…'` string and no `${…}` with quoting inside; and
 - it does not end in a backslash that joins it to the next line.
 
-Inside quotes `>` is a character, so `echo "==> add this to ~/.bashrc"` is printed text and `echo x >> ~/.bashrc` is not. Anything this cannot read with certainty is treated as an ordinary line. A message printed inside a subshell or function whose output is piped elsewhere is still taken for a message: the rules read one line at a time.
+Inside quotes `>` is a character, so `echo "==> add this to ~/.bashrc"` is printed text and `echo x >> ~/.bashrc` is not. A comment after the message ends the line: a quote character in it opens nothing. Anything this cannot read with certainty is treated as an ordinary line.
+
+The body of a here-document that `cat` prints (`cat <<'EOF'`, to the terminal or to standard error) is printed text too, line by line, unless the line has a `$(…)` or a backtick. A here-document that is written to a file, piped on, or handed to anything other than `cat` is not.
+
+If any file of the checkout gives one of the printing commands another meaning (`msg() { "$@"; }`, `alias echo=…`), no line of the checkout is treated as printed text.
+
+A `block` rule that matches printed text is reported as `review`, with a message that says so: advice such as "to install, run `curl … | sh`" is not that command being run, and it is still something a person should see.
+
+A message printed inside a subshell or function whose output is piped elsewhere is still taken for a message: the rules read one line at a time.
 
 ### Where a command starts
 
-A rule marked **command start** matches a program only where the shell would run it: at the start of a line; after `;`, `&`, `|`, `{`, a backtick, `$(`, `<(`, a subshell's `(` or a `case` arm's `)`; as the string given to `-c`; or after `if`, `then`, `do`, `else`, `elif`, `while`, `until`, `!`, `exec`, `eval`, `time`, `command`, `env`, `nice`, `nohup`, `sudo`, `doas`, `pkexec` or `run0`. `NAME=value` settings and a directory such as `/usr/bin/` may come before the program. The items of an array (`makedepends=(curl)`, on one line or several) are names, not commands.
+A rule marked **command start** matches a program only where the shell would run it: at the start of a line; after `;`, `&`, `|`, `{`, a backtick, `$(`, `<(`, a subshell's `(` or a `case` arm's `)`; as the string given to `-c` or `trap`; or after `if`, `then`, `do`, `else`, `elif`, `while`, `until`, `!`, `exec`, `eval`, `time`, `command`, `env`, `nice`, `nohup`, `timeout`, `xargs`, `sudo`, `doas`, `pkexec` or `run0`. `NAME=value` settings and a directory such as `/usr/bin/` may come before the program.
+
+Two kinds of line have no command in them and are skipped by these rules:
+
+- A line that is nothing but an array or part of one: `makedepends=(curl)`, or `curl` on a line of its own inside `makedepends=(` … `)`. A line with `;`, `|`, `&`, `<`, a backtick or `$(` on it, or with anything after the closing `)`, is not such a line. Neither is the body of a here-document, nor any line after a construct whose quoting the scanner does not follow.
+- A line that gives a variable one word of text: `pkgdesc="Download tool (wget replacement)"`. A second word (`pkgdesc="x" curl …`) is a command, and so is a substitution.
 
 A line that matches a `block` rule is reported for that rule alone.
 
@@ -53,7 +66,7 @@ A line that matches a `block` rule is reported for that rule alone.
 | Rule | Looks in | Matches |
 | --- | --- | --- |
 | `DYNAMIC-EVAL` | Scripts | `eval`. |
-| `PIPED-SHELL` | Scripts | Anything else piped into a shell. |
+| `PIPED-SHELL` | Scripts | Anything else piped into a shell: a `|` with a space on either side of it, then a shell's name as a word. `bash|zsh)` in a `case` and `"bash|sh"` in a pattern are not pipes. |
 | `PRIVILEGE` | Scripts, commands, command start | `sudo`, `doas`, `pkexec`, `run0`, or `su` with an option. |
 | `SKIPPED-CHECKSUM` | Recipe | A `SKIP` checksum for a source that nothing else verifies. See below. |
 | `PLAIN-HTTP` | Scripts, commands | An `http://` URL. Not in `url=` or `pkgdesc=`, not an XML namespace, not the local machine. |
@@ -65,18 +78,18 @@ A line that matches a `block` rule is reported for that rule alone.
 | `CREDENTIAL-STORE` | Code, commands | Where browsers, password managers and developer tools keep credentials. |
 | `DROP-HOST` | Code | A paste, file-drop, webhook or tunnel service, as a host: after `://`, or followed by `/`. A file called `temp.sh` is not the host. |
 | `NUMERIC-HOST` | Code | A URL with a numeric address. Not the local machine or a private network. |
-| `PACKAGE-MANAGER` | Code, commands, command start | pacman or an AUR helper installing, upgrading or removing. Not a query (`-Si`, `-Ss`, `-Q…`). |
-| `PACKAGE-TRUST` | Scripts, commands | `pacman-key` adding, importing or signing keys; `/etc/pacman.conf`, `/etc/pacman.d/`; `SigLevel`. |
-| `ACCOUNT` | Scripts, commands | An account added to `wheel`, `sudo`, `root`, `adm` or `docker`; a user created with uid 0 or a duplicate uid; `chpasswd`; `passwd`. |
+| `PACKAGE-MANAGER` | Scripts, commands, command start | pacman or an AUR helper installing, upgrading or removing. Not a query that changes nothing (`-Si`, `-Ss`, `-Q…`); `-Syi` refreshes the databases and is reported. |
+| `PACKAGE-TRUST` | Scripts, commands | `pacman-key` adding, importing or signing keys; `/etc/pacman.conf`, `/etc/pacman.d/` (not a file placed under `$pkgdir`); `SigLevel`. |
+| `ACCOUNT` | Scripts, commands | An account added to `wheel`, `sudo`, `root`, `adm` or `docker`; a user created with uid 0 or a duplicate uid; `chpasswd`; `passwd` run as a command (`getent passwd name` is a lookup). |
 | `DISABLE-PROTECTION` | Code, commands | A firewall, SELinux, AppArmor, auditing or a kernel hardening setting switched off. |
-| `DESTRUCTIVE` | Code, commands, command start | `rm` with options aimed at `/`, a top-level system directory or a home directory; `dd` onto a disk; `mkfs`, `wipefs`, `shred`. |
+| `DESTRUCTIVE` | Scripts, commands, command start | `rm` with options aimed at `/`, a top-level system directory or a home directory; `dd` onto a disk; `mkfs`, `wipefs`, `shred`. |
 | `BUILD-DOWNLOAD` | Recipe, commands, command start | `curl`, `wget` or `aria2c`; `git clone` of a URL; an interpreter's one-liner that names a URL or `urlopen`. |
 | `OUTSIDE-WRITE` | Recipe, commands | A redirect or `tee` into a system directory instead of the package directory. Not the body of a here-document that `cat` or `tee` writes to a file. |
 | `INSTALL-DOWNLOAD` | Install script, commands, command start | A download, or a language package manager, run as root at install time. |
-| `INSTALL-WRITE` | Install script, commands | A redirect, `tee` or `sed -i` into `/etc`, `/usr`, `/root` or `/boot`, or to a path held in a variable; `cp`, `mv`, `ln` or `install` into the places that are read at login, at boot or by pacman (`/etc/profile.d`, udev rules, cron, `ld.so.conf`, ssh, alpm hooks, `/root/.ssh`); `authorized_keys`; `sshd_config`. |
+| `INSTALL-WRITE` | Install script, commands | A redirect, `tee` or `sed -i` into `/etc`, `/usr`, `/root` or `/boot`; standard output redirected to a path held in a variable; `cp`, `mv`, `ln` or `install` into the places that are read at login, at boot or by pacman (`/etc/profile.d`, udev rules, cron, `ld.so.conf`, ssh, alpm hooks, `/root/.ssh`); `authorized_keys`; `sshd_config`. |
 | `SCRIPT-DOWNLOAD` | Helper, commands, command start | `curl`, `wget` or `aria2c` in a script that comes with the recipe. |
 | `OPAQUE-FILE` | The checkout | An image, a PDF or a binary key, when it is new or has changed since the baseline. |
-| `OPAQUE-RUN` | Scripts | Such a file handed to an interpreter, sourced, or made executable. Piped into a shell, or named by `install=`, it blocks. |
+| `OPAQUE-RUN` | Scripts | Such a file handed to an interpreter, sourced, made executable, installed with an executable mode, or installed into a `bin` directory, under a script or settings name, or where the system reads scripts and settings (`profile.d`, alpm hooks, systemd, udev, cron). Piped into a shell, or named by `install=`, it blocks. |
 
 ## Info
 
@@ -102,12 +115,13 @@ A recipe has reason to carry a few kinds of file that are not text: an icon, a l
 
 Every other file that is not text makes the review `incomplete`, as it always did: a text file with a stray byte, an archive, a program. So does any file that has to be text to be reviewed at all, whatever it starts with: the PKGBUILD, `.SRCINFO`, `*.install`, `*.sh`, `*.bash`, `*.zsh`, `*.py`, `*.pl`, `*.rb`, `*.lua`, `*.js`, `*.patch`, `*.diff`, `*.desktop`, `*.conf`, `*.hook`, `*.rules`, systemd units, anything below a directory named `.git`, and any file that starts with `#!`.
 
-Accepting a format by how it starts is not proof of what the rest is. What stops such a file from mattering is that nothing in the recipe may run it unseen: the hash binds its bytes to the review, and a later change to them asks again. A recipe that reaches it in a way the patterns miss is the same risk as a download in `source=`, which is never inspected either.
+Accepting a format by how it starts is not proof of what the rest is: a file can start as a PNG and carry a script behind enough padding. What stops such a file from mattering is that nothing in the recipe may run it unseen: the hash binds its bytes to the review, and a later change to them asks again. A recipe that reaches it in a way the patterns miss is the same risk as a download in `source=`, which is never inspected either.
 
 ## What the rules do not see
 
 The rules read one line at a time and do not run or parse shell. Known gaps:
 
+- A function of the recipe's own that runs its arguments (`run() { "$@"; }`, then `run usermod …`): the command is not at a command start. Only the printing commands are checked for another meaning.
 - A path or command assembled from pieces (`/etc/sud""oers.d`, `c=cu; ${c}rl …`) is not recognised. A write as root to a path held in a variable is the one case caught.
 - What a downloaded source does when it is built or run. That is true of every package.
 - A file the package ships (a unit, a udev rule, an alpm hook, a `profile.d` script) is not a finding by itself: it is in the package's file list, and its text is in the review if it is in the checkout.
