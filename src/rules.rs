@@ -254,6 +254,14 @@ fn alternatives(word: &str) -> Vec<String> {
 /// stop. A file verified by a PGP signature the recipe pins is noted. Any
 /// other skipped checksum is a download nothing verifies.
 fn skipped_checksums(text: &str) -> (Vec<Finding>, Vec<usize>) {
+    static INDEXED: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r#"^\s*((?:md5|sha1|sha224|sha256|sha384|sha512|b2|ck)sums(?:_[A-Za-z0-9_]+)?)\[([0-9]+)\]=["']?SKIP["']?\s*(?:#.*)?$"#)
+            .expect("built-in pattern must compile")
+    });
+    static ASSIGNED: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r#"^([A-Za-z_][A-Za-z0-9_]*)=["']?([^\s"']+)["']?\s*(?:#.*)?$"#)
+            .expect("built-in pattern must compile")
+    });
     let arrays = arrays(text);
     let items = |name: &str| {
         arrays
@@ -262,10 +270,41 @@ fn skipped_checksums(text: &str) -> (Vec<Finding>, Vec<usize>) {
             .map(|(_, items)| items.as_slice())
     };
     let pinned_keys = items("validpgpkeys").is_some_and(|keys| !keys.is_empty());
+    // A source that is just one variable (`"${_sig_url}"`) is read through
+    // to what the recipe assigns that variable, once.
+    let resolve = |item: &str| -> String {
+        let name = item
+            .strip_prefix("${")
+            .and_then(|rest| rest.strip_suffix('}'))
+            .or_else(|| item.strip_prefix('$'));
+        let assigned = name.and_then(|name| {
+            text.lines().find_map(|line| {
+                let found = ASSIGNED.captures(line)?;
+                (found.get(1)?.as_str() == name)
+                    .then(|| found.get(2).map(|value| value.as_str().to_string()))?
+            })
+        });
+        assigned.unwrap_or_else(|| item.to_string())
+    };
+    // The file name a source is saved under: what precedes `::`, or the last
+    // part of its location.
+    let file_name = |source: &str| -> String {
+        match source.split_once("::") {
+            Some((name, _)) => name.to_string(),
+            None => {
+                let path = source.split(['?', '#']).next().unwrap_or(source);
+                path.rsplit('/').next().unwrap_or(path).to_string()
+            }
+        }
+    };
+    const SIGNATURES: [&str; 3] = [".sig", ".asc", ".sign"];
     let is_signature = |source: &str| {
-        [".sig", ".asc", ".sign"]
+        let location = source
+            .split_once("::")
+            .map_or(source, |(_, location)| location);
+        SIGNATURES
             .iter()
-            .any(|ext| source.ends_with(ext))
+            .any(|ext| file_name(source).ends_with(ext) || location.ends_with(ext))
     };
     let is_vcs = |source: &str| {
         let location = source
@@ -275,10 +314,28 @@ fn skipped_checksums(text: &str) -> (Vec<Finding>, Vec<usize>) {
             .iter()
             .any(|scheme| location.starts_with(scheme))
     };
+
+    // Where each SKIP is: (sums array, position, line).
+    let mut skips: Vec<(String, usize, usize)> = Vec::new();
+    for (name, sums) in &arrays {
+        for (position, (line, sum)) in sums.iter().enumerate() {
+            if sum == "SKIP" {
+                skips.push((name.clone(), position, *line));
+            }
+        }
+    }
+    for (index, line) in text.lines().enumerate() {
+        if let Some(found) = INDEXED.captures(line) {
+            if let Ok(position) = found[2].parse() {
+                skips.push((found[1].to_string(), position, index + 1));
+            }
+        }
+    }
+
     let mut findings = Vec::new();
     // Every line with a judged `SKIP`, whatever the judgement was.
     let mut lines = Vec::new();
-    for (name, sums) in &arrays {
+    for (name, position, line) in skips {
         let Some((algorithm, arch)) = name.split_once("sums") else {
             continue;
         };
@@ -288,44 +345,47 @@ fn skipped_checksums(text: &str) -> (Vec<Finding>, Vec<usize>) {
         ) {
             continue;
         }
-        let sources = items(&format!("source{arch}")).unwrap_or(&[]);
-        for (position, (line, sum)) in sums.iter().enumerate() {
-            if sum != "SKIP" {
-                continue;
-            }
-            lines.push(*line);
-            let source = sources.get(position).map(|(_, source)| source.as_str());
-            let (severity, message) = match source {
-                Some(source) if is_signature(source) => continue,
-                Some(source) if is_vcs(source) => (
+        lines.push(line);
+        let sources: Vec<String> = items(&format!("source{arch}"))
+            .unwrap_or(&[])
+            .iter()
+            .map(|(_, source)| resolve(source))
+            .collect();
+        let source = sources.get(position).map(String::as_str);
+        let (severity, message) = match source {
+            Some(source) if is_signature(source) => continue,
+            Some(source) if is_vcs(source) => (
+                Severity::Info,
+                "A version-control source has no checksum: what is built is whatever the repository holds at the named revision.",
+            ),
+            Some(source)
+                if pinned_keys
+                    && sources.iter().any(|other| {
+                        is_signature(other)
+                            && SIGNATURES.iter().any(|ext| {
+                                file_name(other) == format!("{}{ext}", file_name(source))
+                                    || *other == format!("{source}{ext}")
+                            })
+                    }) =>
+            {
+                (
                     Severity::Info,
-                    "A version-control source has no checksum: what is built is whatever the repository holds at the named revision.",
-                ),
-                Some(source)
-                    if pinned_keys
-                        && sources
-                            .iter()
-                            .any(|(_, other)| is_signature(other) && other.starts_with(source)) =>
-                {
-                    (
-                        Severity::Info,
-                        "A checksum is skipped for a source that is verified by a pinned PGP signature instead.",
-                    )
-                }
-                _ => (Severity::Review, SKIPPED),
-            };
-            findings.push(Finding {
-                rule_id: "SKIPPED-CHECKSUM".into(),
-                source: "deterministic".into(),
-                severity,
-                message: message.into(),
-                evidence: vec![Evidence {
-                    path: "PKGBUILD".into(),
-                    line: *line,
-                    quote: "SKIP".into(),
-                }],
-            });
-        }
+                    "A checksum is skipped for a source that is verified by a pinned PGP signature instead.",
+                )
+            }
+            _ => (Severity::Review, SKIPPED),
+        };
+        findings.push(Finding {
+            rule_id: "SKIPPED-CHECKSUM".into(),
+            source: "deterministic".into(),
+            severity,
+            message: message.into(),
+            evidence: vec![Evidence {
+                path: "PKGBUILD".into(),
+                line,
+                quote: "SKIP".into(),
+            }],
+        });
     }
     (findings, lines)
 }
@@ -1266,9 +1326,18 @@ mod tests {
         // A SKIP with no source to pair it with, or written another way, is reviewed.
         assert_eq!(sev("sha256sums=('SKIP')"), [Severity::Review]);
         assert_eq!(
-            sev("package() {\n  sha256sums[0]=SKIP\n}"),
+            sev("package() {\n  sha256sums+=SKIP\n}"),
             [Severity::Review]
         );
+        // Set by position after the array: judged by the source at that position.
+        let by_index = "source=(a.tar.gz \"x.sig::https://example.invalid/x.gpg\" b.tar.gz)\nsha256sums=(0 0 0)\nsha256sums[1]='SKIP'\nsha256sums[2]='SKIP'";
+        assert_eq!(sev(by_index), [Severity::Review]);
+        // A signature saved under another name than its location.
+        let renamed = "source=(\"app.deb::https://example.invalid/app.deb\" \"app.deb.sig::https://example.invalid/app.gpg\")\nsha256sums=('SKIP' 'SKIP')\nvalidpgpkeys=('ABCD')";
+        assert_eq!(sev(renamed), [Severity::Info]);
+        // A source that is one variable is read through to its assignment.
+        let through = "_url=https://example.invalid/x.tar.xz\n_sig=${_url}.sig\nsource_x86_64=(\"${_url}\" \"${_sig}\")\nsha256sums_x86_64=('0000'\n                   'SKIP')";
+        assert!(sev(through).is_empty());
     }
 
     #[test]

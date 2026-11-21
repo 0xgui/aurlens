@@ -73,6 +73,8 @@ A `SKIP` in a checksum array of the PKGBUILD is judged by the source in the same
 - The source's signature file is also a source and `validpgpkeys` is not empty: `info`. makepkg verifies the file against the pinned key.
 - Anything else, including a `SKIP` that cannot be paired with a source or is written some other way: `review`.
 
+A checksum set by position (`sha256sums[4]='SKIP'`) is judged by the source at that position. A signature is recognised by the name it is saved under (`x.sig::https://…/x.gpg`) as well as by its location, and a source that is a single variable is read through to its assignment.
+
 ## AI findings
 
 A model can add findings at any of the three severities and cannot change or remove a finding from a rule. Its instructions reserve `review` for a concrete security risk and `block` for behaviour with no honest use; packaging style and facts true of every source build are `info` or left out. See [the AI protocol](ai-protocol.md).
