@@ -700,7 +700,6 @@ fn verified_sources(text: &str) -> Vec<usize> {
 /// it stops trusting comments for the rest of the file. From there on,
 /// comment-looking lines are inspected like any other line. The cost of not
 /// knowing is a finding in a comment, never a skipped command.
-#[cfg(test)]
 fn comment_lines(text: &str) -> Vec<bool> {
     line_kinds(text).comments
 }
@@ -1049,6 +1048,246 @@ fn heredoc_marker(line: &[char], mut i: usize) -> Option<(Vec<char>, bool, usize
     }
 }
 
+/// Findings about files that are not text. Nothing looked inside them, so
+/// what there is to judge is whether they are new, and what the recipe does
+/// with them.
+///
+/// - A file that is not text needs a person the first time, and again when
+///   it changes: `review`. One that is byte for byte the file of the approved
+///   baseline was accepted then: `info`.
+/// - A script that hands such a file to an interpreter is reviewed, and one
+///   that pipes it into a shell is blocked: the content that would run is the
+///   content nobody could read.
+pub(crate) fn opaque(snapshot: &Snapshot, baseline: Option<&Snapshot>) -> Vec<Finding> {
+    let mut findings = Vec::new();
+    let finding = |rule_id: &str, severity, message: String, evidence| Finding {
+        rule_id: rule_id.into(),
+        source: "deterministic".into(),
+        severity,
+        message,
+        evidence,
+    };
+    let opaque_files: Vec<&str> = snapshot
+        .files
+        .iter()
+        .filter(|file| file.opaque)
+        .map(|file| file.path.as_str())
+        .collect();
+    // pacman runs the install script as root. It has to be a text file of the
+    // checkout: named by a file that was not inspected, or not readable from
+    // the recipe while such a file is present, it is not reviewed.
+    if let Some(recipe) = snapshot
+        .files
+        .iter()
+        .find(|file| file.path == "PKGBUILD" && !opaque_files.is_empty())
+    {
+        for (line, name) in install_scripts(&recipe.text) {
+            let evidence = vec![Evidence {
+                path: recipe.path.clone(),
+                line,
+                quote: "install=".into(),
+            }];
+            match name {
+                Some(name)
+                    if opaque_files.iter().any(|path| {
+                        path.rsplit('/').next() == name.rsplit('/').next()
+                    }) =>
+                {
+                    findings.push(finding(
+                    "OPAQUE-RUN",
+                    Severity::Block,
+                    format!("{name} would be run as root by pacman, and its content could not be inspected."),
+                    evidence,
+                    ))
+                }
+                Some(_) => {}
+                // Not readable, and the line names such a file itself.
+                None if recipe.text.lines().nth(line - 1).is_some_and(|text| {
+                    opaque_files
+                        .iter()
+                        .any(|path| text.contains(path.rsplit('/').next().unwrap_or(path)))
+                }) =>
+                {
+                    findings.push(finding(
+                        "OPAQUE-RUN",
+                        Severity::Block,
+                        "The install script pacman runs as root is set to a file whose content could not be inspected.".into(),
+                        evidence,
+                    ))
+                }
+                None => findings.push(finding(
+                    "OPAQUE-RUN",
+                    Severity::Review,
+                    "The file named by install= could not be read from the recipe, and the checkout has files that were not inspected.".into(),
+                    evidence,
+                )),
+            }
+        }
+    }
+    for file in snapshot.files.iter().filter(|file| file.opaque) {
+        let accepted = baseline.is_some_and(|old| {
+            old.files.iter().any(|before| {
+                before.opaque && before.path == file.path && before.sha256 == file.sha256
+            })
+        });
+        let (severity, message) = if accepted {
+            (
+                Severity::Info,
+                format!(
+                    "{} is a {} and was not inspected. It is unchanged since the baseline.",
+                    file.path, file.format
+                ),
+            )
+        } else {
+            (
+                Severity::Review,
+                format!(
+                    "{} starts as a {} ({} bytes). Its content was not inspected; its hash is part of the snapshot.",
+                    file.path, file.format, file.size
+                ),
+            )
+        };
+        findings.push(finding("OPAQUE-FILE", severity, message, vec![]));
+
+        let name = file.path.rsplit('/').next().unwrap_or(&file.path);
+        let quoted = regex::escape(name);
+        let piped =
+            Regex::new(&format!(r"{quoted}[^\n]*\|\s*(?:ba|z|da)?sh\b")).expect("escaped name");
+        let run = Regex::new(&format!(
+            r"(?:\b(?:bash|sh|zsh|dash|source|eval|exec|python[0-9.]*|perl|ruby|node|lua|php|xargs|env)\s[^\n]*|(?:^|[;&|])\s*\.\s+[^\n]*|\./|chmod\s+[^\n]*\+x[^\n]*){quoted}"
+        ))
+        .expect("escaped name");
+        let placed = Regex::new(&format!(
+            r"\b(?:install|cp|mv|ln)\b[^\n]*(?:{quoted}[^\n]*(?:/s?bin/|/profile\.d/|/libalpm/|/systemd/|/udev/|/autostart/|/cron|/pacman\.d/|/modules-load\.d/|/modprobe\.d/|/sudoers|/polkit-1/|\.(?:sh|bash|zsh|py|pl|install|hook|service|timer|rules|desktop|conf)\b)|-[A-Za-z]*m\s*[0-7]?[1357][0-7]{{2}}\b[^\n]*{quoted})"
+        ))
+        .expect("escaped name");
+        for script in snapshot
+            .files
+            .iter()
+            .filter(|other| !other.opaque && is_script(other))
+        {
+            let comments = comment_lines(&script.text);
+            for (index, line) in script.text.lines().enumerate() {
+                if comments.get(index).copied().unwrap_or(false) || !line.contains(name) {
+                    continue;
+                }
+                let hit = if let Some(m) = piped.find(line) {
+                    Some((
+                        "OPAQUE-RUN",
+                        Severity::Block,
+                        "A file whose content could not be inspected is piped into a shell.",
+                        m,
+                    ))
+                } else {
+                    run.find(line)
+                        .map(|m| {
+                            ("OPAQUE-RUN", Severity::Review, "A file whose content could not be inspected is run or handed to an interpreter.", m)
+                        })
+                        .or_else(|| {
+                            placed.find(line).map(|m| {
+                                ("OPAQUE-RUN", Severity::Review, "A file whose content could not be inspected is installed as a program, or where the system reads scripts and settings.", m)
+                            })
+                        })
+                };
+                if let Some((id, severity, message, matched)) = hit {
+                    findings.push(finding(
+                        id,
+                        severity,
+                        message.into(),
+                        vec![Evidence {
+                            path: script.path.clone(),
+                            line: index + 1,
+                            quote: matched.as_str().chars().take(512).collect(),
+                        }],
+                    ));
+                }
+            }
+        }
+    }
+    findings
+}
+
+/// The `install=` settings of a PKGBUILD: the line of each, and the file it
+/// names when that can be read from the recipe. A name written with variables
+/// is followed through assignments of plain values (`install=$pkgname.install`
+/// with `pkgname=demo`); a variable set more than one way, or anything else,
+/// is not guessed.
+fn install_scripts(text: &str) -> Vec<(usize, Option<String>)> {
+    static INSTALL: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"(?:^|[\s;{])install\+?=([^\s;]*)").expect("built-in pattern must compile")
+    });
+    static INDIRECT: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"\bprintf\s+-v\s+install\b|\b(?:read|mapfile|readarray)\s+(?:-\S+\s+)*install\b|\$\{install:?=")
+            .expect("built-in pattern must compile")
+    });
+    static VARIABLE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)")
+            .expect("built-in pattern must compile")
+    });
+    static PLAIN: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"^[A-Za-z0-9_.+@/-]+$").expect("built-in pattern must compile")
+    });
+    let unquote = |value: &str| -> String {
+        let value = value.split(" #").next().unwrap_or(value).trim();
+        value.trim_end_matches(';').trim().replace(['"', '\''], "")
+    };
+    // What a variable is set to, when every assignment of it agrees.
+    let assigned = |name: &str| -> Option<String> {
+        let mut values = text.lines().filter_map(|line| {
+            let rest = line.trim_start();
+            let rest = rest.strip_prefix("local ").unwrap_or(rest).trim_start();
+            let value = rest.strip_prefix(name)?.strip_prefix('=')?;
+            Some(unquote(value))
+        });
+        let first = values.next()?;
+        (values.all(|other| other == first) && PLAIN.is_match(&first)).then_some(first)
+    };
+    let comments = comment_lines(text);
+    let mut found = Vec::new();
+    for (index, line) in text.lines().enumerate() {
+        if comments.get(index).copied().unwrap_or(false) {
+            continue;
+        }
+        let Some(value) = INSTALL.captures(line).and_then(|c| c.get(1)) else {
+            // The variable set some other way: not read, and not ignored.
+            if INDIRECT.is_match(line) {
+                found.push((index + 1, None));
+            }
+            continue;
+        };
+        let mut name = unquote(value.as_str());
+        for _ in 0..3 {
+            let mut unknown = false;
+            let next = VARIABLE
+                .replace_all(&name, |c: &regex::Captures| {
+                    let variable = c.get(1).or_else(|| c.get(2)).map_or("", |m| m.as_str());
+                    assigned(variable).unwrap_or_else(|| {
+                        unknown = true;
+                        String::new()
+                    })
+                })
+                .into_owned();
+            if unknown {
+                name = "$".into();
+                break;
+            }
+            name = next;
+        }
+        found.push((index + 1, PLAIN.is_match(&name).then_some(name)));
+    }
+    found
+}
+
+/// Shell that runs: the PKGBUILD, install scripts, `*.sh`, `*.bash`, and
+/// anything that starts with `#!`.
+fn is_script(file: &crate::model::PackageFile) -> bool {
+    file.path == "PKGBUILD"
+        || file.path.ends_with(".install")
+        || file.path.ends_with(".sh")
+        || file.path.ends_with(".bash")
+        || file.text.starts_with("#!")
+}
+
 pub(crate) fn inspect(snapshot: &Snapshot) -> Vec<Finding> {
     let mut findings = Vec::new();
     let paths: Vec<&str> = snapshot
@@ -1071,7 +1310,7 @@ pub(crate) fn inspect(snapshot: &Snapshot) -> Vec<Finding> {
                 &message_lines(&file.text, &line_kinds(&file.text)),
             )
         });
-    for file in &snapshot.files {
+    for file in snapshot.files.iter().filter(|file| !file.opaque) {
         let lines = line_kinds(&file.text);
         let (comments, generated) = (&lines.comments, &lines.generated);
         let messages = if redefined {
@@ -1081,11 +1320,7 @@ pub(crate) fn inspect(snapshot: &Snapshot) -> Vec<Finding> {
         };
         let is_recipe = file.path == "PKGBUILD";
         let is_install_script = file.path.ends_with(".install");
-        let is_script = is_recipe
-            || is_install_script
-            || file.path.ends_with(".sh")
-            || file.path.ends_with(".bash")
-            || file.text.starts_with("#!");
+        let is_script = is_script(file);
         // Checksums written as array items are judged by their source.
         let (judged, judged_lines) = if is_recipe {
             skipped_checksums(&file.text, &paths)
@@ -1234,6 +1469,7 @@ mod tests {
                 mode: 0o644,
                 text: text.into(),
                 sha256: String::new(),
+                ..Default::default()
             }],
             directories: vec![],
             digest: String::new(),
@@ -1384,6 +1620,7 @@ mod tests {
             mode: 0o644,
             text: text.into(),
             sha256: String::new(),
+            ..Default::default()
         }
     }
 
@@ -1761,6 +1998,184 @@ mod tests {
         // A source that is one variable is read through to its assignment.
         let through = "_url=https://example.invalid/x.tar.xz\n_sig=${_url}.sig\nsource_x86_64=(\"${_url}\" \"${_sig}\")\nsha256sums_x86_64=('0000'\n                   'SKIP')";
         assert!(sev(through).is_empty());
+    }
+
+    fn with_blob(pkgbuild: &str, blob_hash: &str) -> Snapshot {
+        let mut snapshot = snapshot(pkgbuild);
+        snapshot.files.push(PackageFile {
+            path: "assets/icon.png".into(),
+            mode: 0o644,
+            sha256: blob_hash.into(),
+            opaque: true,
+            size: 2048,
+            format: "PNG image",
+            ..Default::default()
+        });
+        snapshot
+    }
+
+    #[test]
+    fn the_install_script_has_to_be_a_file_that_was_read() {
+        let found = |recipe: &str| -> Vec<(String, Severity)> {
+            let current = with_blob(recipe, "aaaa");
+            opaque(&current, Some(&current))
+                .into_iter()
+                .filter(|f| f.rule_id == "OPAQUE-RUN")
+                .map(|f| (f.rule_id, f.severity))
+                .collect()
+        };
+        // Named outright, through a variable, or inside a function.
+        for recipe in [
+            "install=assets/icon.png\n",
+            "install='icon.png'\n",
+            "_i=icon.png\ninstall=$_i\n",
+            "_n=icon\npackage_a() {\n  install=\"${_n}.png\"\n}\n",
+            "package_a() { install=icon.png; }\n",
+            "printf -v install %s icon.png\n",
+            "read -r install <<< icon.png\n",
+        ] {
+            assert_eq!(
+                found(recipe),
+                [("OPAQUE-RUN".to_string(), Severity::Block)],
+                "{recipe}"
+            );
+        }
+        // An ordinary install script, written the ordinary ways.
+        for recipe in [
+            "pkgname=demo\ninstall=demo.install\n",
+            "pkgname=demo\ninstall=$pkgname.install\n",
+            "pkgname=demo\ninstall=\"${pkgname}.install\" # hooks\n",
+            "_pkgname=demo\npkgname=$_pkgname-bin\ninstall=${_pkgname}.install\n",
+            "# install=icon.png\n",
+        ] {
+            assert!(found(recipe).is_empty(), "{recipe}");
+        }
+        // Not readable from the recipe while a file nobody read is present.
+        for recipe in [
+            "install=$(echo icon).png\n",
+            "_i=a\n_i=b\ninstall=$_i\n",
+            "pkgname=(a b)\ninstall=${pkgname[0]}.install\n",
+            "install=$unset.install\n",
+            "_f=icon\nprintf -v install %s.install \"$_g\"\n",
+        ] {
+            assert_eq!(
+                found(recipe),
+                [("OPAQUE-RUN".to_string(), Severity::Review)],
+                "{recipe}"
+            );
+        }
+        // Without such a file there is nothing for this to say.
+        assert!(opaque(&snapshot("install=$(echo x)\n"), None).is_empty());
+        // The finding says what the file claims to be.
+        let first = with_blob("pkgname=demo\n", "aaaa");
+        assert!(
+            opaque(&first, None)[0]
+                .message
+                .contains("starts as a PNG image")
+        );
+    }
+
+    #[test]
+    fn a_file_that_is_not_text_needs_a_person_once_and_again_when_it_changes() {
+        let quiet =
+            "package() { install -Dm644 assets/icon.png \"$pkgdir/usr/share/pixmaps/app.png\"; }\n";
+        let sev = |current: &Snapshot, baseline: Option<&Snapshot>| -> Vec<(String, Severity)> {
+            opaque(current, baseline)
+                .into_iter()
+                .map(|f| (f.rule_id, f.severity))
+                .collect()
+        };
+        let first = with_blob(quiet, "aaaa");
+        // New to the reader: a decision.
+        assert_eq!(
+            sev(&first, None),
+            [("OPAQUE-FILE".to_string(), Severity::Review)]
+        );
+        // The same bytes as in the approved baseline: a note.
+        assert_eq!(
+            sev(&first, Some(&first)),
+            [("OPAQUE-FILE".to_string(), Severity::Info)]
+        );
+        // Changed since then, or a baseline that did not have it: a decision again.
+        assert_eq!(
+            sev(&with_blob(quiet, "bbbb"), Some(&first)),
+            [("OPAQUE-FILE".to_string(), Severity::Review)]
+        );
+        assert_eq!(
+            sev(&first, Some(&snapshot(quiet))),
+            [("OPAQUE-FILE".to_string(), Severity::Review)]
+        );
+        // A baseline where the path was a text file is not an approval of the blob.
+        let mut text_before = snapshot(quiet);
+        text_before.files.push(file("assets/icon.png", "aaaa"));
+        assert_eq!(
+            sev(&first, Some(&text_before)),
+            [("OPAQUE-FILE".to_string(), Severity::Review)]
+        );
+        // A checkout of text files has nothing to say here.
+        assert!(opaque(&snapshot(quiet), None).is_empty());
+    }
+
+    #[test]
+    fn running_a_file_nobody_could_read_is_reviewed_and_piping_it_into_a_shell_is_blocked() {
+        let run = |line: &str| -> Vec<(String, Severity)> {
+            let current = with_blob(&format!("package() {{\n  {line}\n}}\n"), "aaaa");
+            // Unchanged since the baseline, so only what the recipe does with it is left.
+            opaque(&current, Some(&current))
+                .into_iter()
+                .filter(|f| f.rule_id == "OPAQUE-RUN")
+                .map(|f| (f.rule_id, f.severity))
+                .collect()
+        };
+        for line in [
+            "bash assets/icon.png",
+            "source ./assets/icon.png",
+            ". assets/icon.png",
+            "python3 assets/icon.png",
+            "chmod +x assets/icon.png && ./assets/icon.png",
+            "exec env -i ./icon.png",
+        ] {
+            assert_eq!(
+                run(line),
+                [("OPAQUE-RUN".to_string(), Severity::Review)],
+                "{line}"
+            );
+        }
+        for line in [
+            "tail -c +100 assets/icon.png | sh",
+            "cat icon.png | base64 -d | bash",
+        ] {
+            assert_eq!(
+                run(line),
+                [("OPAQUE-RUN".to_string(), Severity::Block)],
+                "{line}"
+            );
+        }
+        // Copying it into the package is what an icon is for.
+        for line in [
+            "install -Dm644 assets/icon.png \"$pkgdir/usr/share/pixmaps/app.png\"",
+            "install -Dm644 icon.png \"$pkgdir/usr/share/icons/hicolor/128x128/apps/app.png\"",
+            "cp assets/icon.png \"$pkgdir/usr/share/app/\"",
+            "# bash assets/icon.png",
+        ] {
+            assert!(run(line).is_empty(), "{line}");
+        }
+        // Put where it would be run, or read as a script or as settings, it
+        // is not being used as an icon.
+        for line in [
+            "install -Dm644 icon.png \"$pkgdir/etc/profile.d/probe.sh\"",
+            "install -Dm755 assets/icon.png \"$pkgdir/usr/share/app/tool\"",
+            "install -m 0755 icon.png \"$pkgdir/opt/app/tool\"",
+            "cp icon.png \"$pkgdir/usr/bin/tool\"",
+            "install -Dm644 icon.png \"$pkgdir/usr/share/libalpm/hooks/zz.hook\"",
+            "install -Dm644 icon.png \"$pkgdir/usr/lib/systemd/system/x.service\"",
+        ] {
+            assert_eq!(
+                run(line),
+                [("OPAQUE-RUN".to_string(), Severity::Review)],
+                "{line}"
+            );
+        }
     }
 
     #[test]

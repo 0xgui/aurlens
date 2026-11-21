@@ -324,33 +324,117 @@ impl Collector<'_> {
         if !stable(before, &metadata(&file, Some(path))?) || bytes.len() as u64 != before.size() {
             return Err(changed(Some(path)));
         }
-        let text = String::from_utf8(bytes).map_err(|_| {
+        // Text is inspected. An image, a PDF or a binary key is kept by its
+        // hash: the snapshot covers it, so a change to it is noticed, and the
+        // report says that nothing looked inside. Refusing the whole checkout
+        // for an icon protects nobody. Anything else that is not text is
+        // refused as before: a text file with a stray byte in it is not an
+        // icon, and neither is an archive or a program. So is what has to be
+        // text to be reviewed at all (the recipe, an install script, anything
+        // written as a script), whatever it starts with.
+        let sha256 = format!("{:x}", Sha256::digest(&bytes));
+        let size = bytes.len();
+        let not_text = || {
             error(
                 "unsupported_text",
                 Some(path),
                 "File must contain UTF-8 text",
             )
-        })?;
-        if text
-            .chars()
-            .any(|c| c.is_control() && !matches!(c, '\t' | '\n' | '\r'))
-        {
-            return Err(error(
-                "unsupported_text",
-                Some(path),
-                "Binary or control-character content is unsupported",
-            ));
-        }
-        self.bytes += text.len();
-        let sha256 = format!("{:x}", Sha256::digest(text.as_bytes()));
+        };
+        let format = binary_format(&bytes);
+        let (text, opaque) = match String::from_utf8(bytes) {
+            Ok(text) if !text.contains('\0') => {
+                if text
+                    .chars()
+                    .any(|c| c.is_control() && !matches!(c, '\t' | '\n' | '\r'))
+                {
+                    // Text with control characters in it reads differently
+                    // from how it runs. That is not an image.
+                    return Err(error(
+                        "unsupported_text",
+                        Some(path),
+                        "Binary or control-character content is unsupported",
+                    ));
+                }
+                (text, false)
+            }
+            Ok(text) if must_be_text(path, text.as_bytes()) => return Err(not_text()),
+            Err(invalid) if must_be_text(path, invalid.as_bytes()) => return Err(not_text()),
+            _ if format.is_none() => return Err(not_text()),
+            _ => (String::new(), true),
+        };
+        self.bytes += size;
         self.files.push(PackageFile {
             path: path.to_owned(),
             mode: before.mode() & 0o7777,
             text,
             sha256,
+            opaque,
+            size,
+            format: if opaque { format.unwrap_or("") } else { "" },
         });
         Ok(())
     }
+}
+
+/// Files that are read as shell or that the tools read as text. One of these
+/// that is not text cannot be reviewed, and "not inspected" is no answer.
+fn must_be_text(path: &str, bytes: &[u8]) -> bool {
+    let name = path.rsplit('/').next().unwrap_or(path);
+    path == "PKGBUILD"
+        || name == ".SRCINFO"
+        // Only the root `.git` is git's own. Anything else by that name is
+        // part of the recipe and is reviewed as text or not at all.
+        || path.split('/').any(|part| part == ".git")
+        || [
+            ".install", ".sh", ".bash", ".zsh", ".py", ".pl", ".rb", ".lua", ".js", ".patch",
+            ".diff", ".desktop", ".conf", ".hook", ".rules", ".service", ".socket", ".timer",
+            ".path", ".mount", ".target",
+        ]
+        .iter()
+        .any(|extension| name.ends_with(extension))
+        || bytes.starts_with(b"#!")
+}
+
+/// The kinds of file that are not text and that a recipe has reason to carry,
+/// told by how they start: an icon, a licence as a PDF, a binary OpenPGP key.
+/// A file that starts like one and is mostly readable text is not one.
+///
+/// This says what a file claims to be, not what all of it is. It keeps a
+/// text file with a stray byte, an archive or a program from being waved
+/// through as "an icon"; what keeps an accepted file from mattering is that
+/// its hash is in the snapshot and that running it is a finding.
+fn binary_format(bytes: &[u8]) -> Option<&'static str> {
+    let format = match bytes {
+        [0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n', ..] => "PNG image",
+        [0xff, 0xd8, 0xff, ..] => "JPEG image",
+        [b'G', b'I', b'F', b'8', b'7' | b'9', b'a', ..] => "GIF image",
+        [
+            b'R',
+            b'I',
+            b'F',
+            b'F',
+            _,
+            _,
+            _,
+            _,
+            b'W',
+            b'E',
+            b'B',
+            b'P',
+            ..,
+        ] => "WebP image",
+        [0, 0, 1, 0, ..] => "ICO icon",
+        [b'%', b'P', b'D', b'F', b'-', ..] => "PDF document",
+        // A public-key packet, old or new format, then the key version.
+        [0x99, _, _, 3..=6, ..] | [0x98, _, 3..=6, ..] | [0xc6, _, 3..=6, ..] => "OpenPGP key",
+        _ => return None,
+    };
+    let readable = bytes
+        .iter()
+        .filter(|byte| matches!(byte, 0x20..=0x7e | b'\t' | b'\n' | b'\r'))
+        .count();
+    (bytes.len() < 64 || readable * 10 < bytes.len() * 6).then_some(format)
 }
 
 fn field(hash: &mut Sha256, value: &[u8]) {
@@ -359,9 +443,18 @@ fn field(hash: &mut Sha256, value: &[u8]) {
 }
 
 fn digest(files: &[PackageFile], directories: &[(String, u32)]) -> String {
+    // A text file enters with its content, as it always has, so the digest
+    // of a checkout of text files is what it was. An opaque file enters
+    // under its own kind with the hash of its bytes.
     let mut records: Vec<(&str, u8, u32, &[u8])> = files
         .iter()
-        .map(|file| (file.path.as_str(), b'f', file.mode, file.text.as_bytes()))
+        .map(|file| {
+            if file.opaque {
+                (file.path.as_str(), b'o', file.mode, file.sha256.as_bytes())
+            } else {
+                (file.path.as_str(), b'f', file.mode, file.text.as_bytes())
+            }
+        })
         .collect();
     records.extend(
         directories
@@ -652,9 +745,152 @@ mod tests {
         fs::hard_link(root.path().join("PKGBUILD"), root.path().join("hard")).unwrap();
         assert_eq!(failure(root.path()).code, "hardlink");
         fs::remove_file(root.path().join("hard")).unwrap();
-        for bytes in [&[0][..], &[255][..], &[27][..], "\u{0085}".as_bytes()] {
-            fs::write(root.path().join("binary"), bytes).unwrap();
+        // Text with control characters reads differently from how it runs.
+        for bytes in [&[27][..], "\u{0085}".as_bytes(), b"echo hi\x1b[8m; true\n"] {
+            fs::write(root.path().join("helper"), bytes).unwrap();
             assert_eq!(failure(root.path()).code, "unsupported_text");
+        }
+        fs::remove_file(root.path().join("helper")).unwrap();
+        // What is read as shell, or by the packaging tools as text, has to be text.
+        for name in [
+            "x.install",
+            "build.sh",
+            "fix.patch",
+            "app.desktop",
+            ".SRCINFO",
+        ] {
+            fs::write(root.path().join(name), [0x89, b'P', b'N', b'G', 0, 255]).unwrap();
+            assert_eq!(failure(root.path()).code, "unsupported_text", "{name}");
+            fs::remove_file(root.path().join(name)).unwrap();
+        }
+        fs::write(root.path().join("tool"), b"#!/bin/sh\necho hi\0\n").unwrap();
+        assert_eq!(failure(root.path()).code, "unsupported_text");
+        fs::remove_file(root.path().join("tool")).unwrap();
+        fs::write(root.path().join("PKGBUILD"), [b'p', 0, 255]).unwrap();
+        assert_eq!(failure(root.path()).code, "unsupported_text");
+    }
+
+    #[test]
+    fn a_file_that_is_not_text_is_kept_by_its_hash() {
+        let root = package();
+        let png = [
+            0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, 255, 254,
+        ];
+        fs::write(root.path().join("icon.png"), png).unwrap();
+        fs::create_dir_all(root.path().join("keys/pgp")).unwrap();
+        fs::write(
+            root.path().join("keys/pgp/ABCD.asc"),
+            [0x99, 0x01, 0x0d, 0x04, 0, 200],
+        )
+        .unwrap();
+        let first = snapshot(root.path());
+        let icon = first
+            .files
+            .iter()
+            .find(|file| file.path == "icon.png")
+            .unwrap();
+        assert!(icon.opaque && icon.text.is_empty());
+        assert_eq!(icon.size, png.len());
+        assert_eq!(icon.sha256, format!("{:x}", Sha256::digest(png)));
+        assert!(
+            first
+                .files
+                .iter()
+                .any(|file| file.path == "keys/pgp/ABCD.asc" && file.opaque)
+        );
+        assert!(
+            first
+                .files
+                .iter()
+                .any(|file| file.path == "PKGBUILD" && !file.opaque)
+        );
+        verify(root.path(), &first, &Limits::default()).unwrap();
+        // One changed byte in it changes the snapshot.
+        let mut other = png;
+        other[13] = 0;
+        fs::write(root.path().join("icon.png"), other).unwrap();
+        let second = snapshot(root.path());
+        assert_ne!(second.digest, first.digest);
+        assert!(verify(root.path(), &first, &Limits::default()).is_err());
+        let changes = compare(&first, &second);
+        assert_eq!(changes.len(), 1);
+        assert_eq!(
+            (changes[0].path.as_str(), changes[0].kind.as_str()),
+            ("icon.png", "modified")
+        );
+        // A text file and an opaque file with the same bytes as a digest
+        // string cannot stand in for each other.
+        fs::write(root.path().join("icon.png"), &icon.sha256).unwrap();
+        assert_ne!(snapshot(root.path()).digest, first.digest);
+        // It counts against the size limits like any other file.
+        fs::write(
+            root.path().join("icon.png"),
+            vec![0u8; Limits::default().max_file_bytes + 1],
+        )
+        .unwrap();
+        assert_eq!(failure(root.path()).code, "file_byte_limit");
+    }
+
+    #[test]
+    fn only_an_image_a_pdf_or_a_key_is_kept_without_being_read() {
+        let png: &[u8] = &[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
+        let noise: Vec<u8> = (0..200u32).map(|i| (i * 37 % 251) as u8 | 0x80).collect();
+        let accepted: [(&str, Vec<u8>, &str); 5] = [
+            ("icon.png", [png, &noise].concat(), "PNG image"),
+            (
+                "photo.jpg",
+                [&[0xff, 0xd8, 0xff, 0xe0][..], &noise].concat(),
+                "JPEG image",
+            ),
+            ("app.ico", [&[0, 0, 1, 0][..], &noise].concat(), "ICO icon"),
+            (
+                "LICENSE.pdf",
+                [b"%PDF-1.4\n", &noise[..]].concat(),
+                "PDF document",
+            ),
+            (
+                "key.gpg",
+                [&[0x99, 0x02, 0x0d, 0x04][..], &noise].concat(),
+                "OpenPGP key",
+            ),
+        ];
+        for (name, bytes, format) in &accepted {
+            let root = package();
+            fs::write(root.path().join(name), bytes).unwrap();
+            let snapshot = snapshot(root.path());
+            let file = snapshot
+                .files
+                .iter()
+                .find(|file| file.path == *name)
+                .unwrap();
+            assert!(file.opaque, "{name}");
+            assert_eq!(file.format, *format);
+        }
+        // A text file with a stray byte in it is not an icon. Neither is an
+        // archive, a program, or bytes nothing recognises.
+        let hook = b"[Trigger]\nOperation = Install\n# \xff\n[Action]\nWhen = PostTransaction\nExec = /bin/sh -c 'id'\n";
+        let refused: [(&str, Vec<u8>); 6] = [
+            ("zz-probe.txt", hook.to_vec()),
+            ("notes.txt", b"post_install() {\n  id\n}\n\0".to_vec()),
+            ("vendor.tar.gz", [&[0x1f, 0x8b, 0x08, 0][..], &noise].concat()),
+            ("probe-bin", [&b"\x7fELF\x02\x01\x01\0"[..], &noise].concat()),
+            ("blob.bin", vec![0, 1, 2, 0xff, 0xfe, 0x20, 0x62, 0x69]),
+            // Starts like an image, and is a script behind that.
+            (
+                "icon.png",
+                [png, &b"\necho this is a long shell script that only starts like an image\nid\nuname -a\n\xff"[..]].concat(),
+            ),
+        ];
+        for (name, bytes) in &refused {
+            let root = package();
+            fs::write(root.path().join(name), bytes).unwrap();
+            assert_eq!(failure(root.path()).code, "unsupported_text", "{name}");
+        }
+        // What has to be text is refused whatever it starts with.
+        for name in ["zz.hook", "99-x.rules", "app.conf", "x.install", "x.timer"] {
+            let root = package();
+            fs::write(root.path().join(name), [png, &noise].concat()).unwrap();
+            assert_eq!(failure(root.path()).code, "unsupported_text", "{name}");
         }
     }
 

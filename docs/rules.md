@@ -88,6 +88,8 @@ A line that matches a `block` rule is reported for that rule alone.
 | `INSTALL-DOWNLOAD` | Install script, commands, command start | A download, or a language package manager, run as root at install time. |
 | `INSTALL-WRITE` | Install script, commands | A redirect, `tee` or `sed -i` into `/etc`, `/usr`, `/root` or `/boot`; standard output redirected to a path held in a variable; `cp`, `mv`, `ln` or `install` into the places that are read at login, at boot or by pacman (`/etc/profile.d`, udev rules, cron, `ld.so.conf`, ssh, alpm hooks, `/root/.ssh`); `authorized_keys`; `sshd_config`. |
 | `SCRIPT-DOWNLOAD` | Helper, commands, command start | `curl`, `wget` or `aria2c` in a script that comes with the recipe. |
+| `OPAQUE-FILE` | The checkout | An image, a PDF or a binary key, when it is new or has changed since the baseline. |
+| `OPAQUE-RUN` | Scripts | Such a file handed to an interpreter, sourced, made executable, installed with an executable mode, or installed into a `bin` directory, under a script or settings name, or where the system reads scripts and settings (`profile.d`, alpm hooks, systemd, udev, cron). Piped into a shell, or named by `install=`, it blocks. |
 
 ## Info
 
@@ -95,6 +97,7 @@ A line that matches a `block` rule is reported for that rule alone.
 | --- | --- | --- |
 | `SKIPPED-CHECKSUM` | Recipe | A `SKIP` checksum for a version-control source, for a file verified by a pinned PGP signature, or for a file of the checkout itself. |
 | `PLAIN-HTTP` | Recipe | An `http://` source that has a SHA-2 or BLAKE2 checksum in the same position. |
+| `OPAQUE-FILE` | The checkout | An image, a PDF or a binary key that is byte for byte the file of the baseline. |
 | `SANDBOX-HELPER` | Code | A Chromium sandbox helper made setuid root. See below. |
 | `INSTALL-SERVICE` | Install script, commands, command start | `systemctl` enabling, starting or stopping a service, or a unit linked into a `.wants` directory by hand. |
 | `PRELOAD` | Code | `LD_PRELOAD=`. |
@@ -102,6 +105,17 @@ A line that matches a `block` rule is reported for that rule alone.
 ### The sandbox helper
 
 Chromium-based applications ship a helper that must be setuid root. A command that sets a privilege bit is a `SANDBOX-HELPER` note instead of a `SETUID` finding when every file it names is called `…-sandbox` or `…_sandbox` and none is in a `bin` directory. `setcap` never qualifies. The name is all there is to go by: a different program installed under that name inside an application's own directory would be a note too.
+
+## Files that are not text
+
+A recipe has reason to carry a few kinds of file that are not text: an icon, a licence as a PDF, a binary OpenPGP key. A file is accepted as one of these only when it starts the way that format starts (PNG, JPEG, GIF, WebP, ICO, PDF, an OpenPGP public key) and is not mostly readable text behind that start. It is then kept by its hash and listed in `coverage.uninspected`. No rule reads it and no model receives it.
+
+- `OPAQUE-FILE` names the format and asks for a decision when the file is new to the reader or its bytes changed. It is a note when the baseline has the same file.
+- `OPAQUE-RUN` looks at what the scripts of the recipe do with such a file. If `install=` names it, or cannot be read while such a file is present, the review does not pass without a person, and a file named by `install=` blocks.
+
+Every other file that is not text makes the review `incomplete`, as it always did: a text file with a stray byte, an archive, a program. So does any file that has to be text to be reviewed at all, whatever it starts with: the PKGBUILD, `.SRCINFO`, `*.install`, `*.sh`, `*.bash`, `*.zsh`, `*.py`, `*.pl`, `*.rb`, `*.lua`, `*.js`, `*.patch`, `*.diff`, `*.desktop`, `*.conf`, `*.hook`, `*.rules`, systemd units, anything below a directory named `.git`, and any file that starts with `#!`.
+
+Accepting a format by how it starts is not proof of what the rest is: a file can start as a PNG and carry a script behind enough padding. What stops such a file from mattering is that nothing in the recipe may run it unseen: the hash binds its bytes to the review, and a later change to them asks again. A recipe that reaches it in a way the patterns miss is the same risk as a download in `source=`, which is never inspected either.
 
 ## What the rules do not see
 
