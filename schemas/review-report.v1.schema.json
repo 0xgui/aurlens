@@ -44,7 +44,7 @@
       "oneOf": [{ "$ref": "#/$defs/sha256" }, { "type": "null" }]
     },
     "files": {
-      "description": "The reviewed files of the current checkout.",
+      "description": "The files of the current checkout: the reviewed text files, and files that are not text, marked `opaque`.",
       "type": "array",
       "items": { "$ref": "#/$defs/file_summary" }
     },
@@ -91,11 +91,15 @@
           "maximum": 4095
         },
         "size": {
-          "description": "The size of the file text in bytes.",
+          "description": "The size of the file in bytes.",
           "type": "integer",
           "minimum": 0
         },
-        "sha256": { "$ref": "#/$defs/sha256" }
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "opaque": {
+          "description": "Present and true for a file that is not text. Its content was not inspected; its hash is part of the snapshot digest. Absent for a text file.",
+          "type": "boolean"
+        }
       }
     },
     "evidence": {
@@ -190,6 +194,11 @@
         },
         "issues": {
           "description": "Stable codes for the reasons coverage is incomplete. Empty if coverage is complete.",
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "uninspected": {
+          "description": "Paths of files that are not text. They are covered by the snapshot digest and nothing looked inside them. Absent in reports from before this field existed.",
           "type": "array",
           "items": { "type": "string" }
         }

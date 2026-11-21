@@ -72,12 +72,19 @@ impl Default for Limits {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct PackageFile {
     pub path: String,
     pub mode: u32,
+    /// The content, for a text file. Empty for an opaque one.
     pub text: String,
+    /// The hash of the file's bytes.
     pub sha256: String,
+    /// The file is not text (an image, a binary key). Its content is not
+    /// inspected and not sent anywhere; its hash is part of the snapshot.
+    pub opaque: bool,
+    /// The size of the file in bytes.
+    pub size: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -183,6 +190,10 @@ pub struct Coverage {
     pub reviewed_bytes: usize,
     pub excluded: Vec<String>,
     pub issues: Vec<String>,
+    /// Files that are not text. They are covered by the snapshot digest, so
+    /// a change to one is noticed, but nothing looked inside them.
+    #[serde(default)]
+    pub uninspected: Vec<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -191,6 +202,9 @@ pub struct FileSummary {
     pub mode: u32,
     pub size: usize,
     pub sha256: String,
+    /// True for a file that is not text and was not inspected.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub opaque: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

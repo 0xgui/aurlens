@@ -10,7 +10,9 @@ All supported text is read into an owned snapshot. The digest binds relative pat
 
 This is not an atomic filesystem snapshot or a lock. Another process can modify files after the final check. A future build integration must check its actual inputs immediately before execution. Filesystems with unusual or hostile behavior are outside this prototype's guarantees.
 
-The collector rejects links, special files, non-UTF-8 content, unsupported control characters, and exhausted byte, entry, or depth limits. An unsupported binary produces incomplete coverage. Only an actual root `.git` directory is excluded. `.gitignore` is ordinary text and cannot hide files from review. Run against fresh checkouts to avoid unsupported build outputs.
+The collector rejects links, special files, text with control characters, and exhausted byte, entry, or depth limits.
+
+A file that is not text (invalid UTF-8, or containing a NUL byte) is not read by any rule and is not sent to a model. It is kept by the hash of its bytes, which is part of the snapshot digest, and reported as uninspected. This is a deliberate trade: refusing every recipe that ships an icon or a binary key protected nobody, and pushed people to install those packages with no review at all. What it costs is stated in the report: nothing looked inside that file. Three things limit the cost. A file that is read as shell or by the packaging tools as text is still refused when it is not text, so a script cannot opt out of inspection by containing a stray byte. A recipe that hands an uninspected file to an interpreter gets a finding, and one that pipes it into a shell is blocked. And an uninspected file needs a person's decision the first time and every time its bytes change. A recipe can still unpack or execute such a file in ways these patterns do not see; the person reviewing has to judge what the recipe does with it. Only an actual root `.git` directory is excluded. `.gitignore` is ordinary text and cannot hide files from review. Run against fresh checkouts to avoid unsupported build outputs.
 
 ## Analysis boundary
 

@@ -80,7 +80,9 @@ Usage errors, such as a missing path or an unknown option, print a message to st
 
 `aurlens schema review` and `aurlens schema verify` print the JSON Schema (draft 2020-12) of the `scan --json` and `verify --json` reports. The same files are in [`schemas/`](schemas). A later release can add fields without changing the schema version, so ignore fields you do not know.
 
-AURLens reviews all supported files in the checkout, including hidden files, helper scripts, `src`, and `pkg`. Git ignore files do not hide content. Only the actual root `.git` metadata directory is excluded and reported. Binary or unsupported text, symlinks, hardlinks, special files, and exceeded limits make coverage incomplete. Prefer a fresh checkout rather than a directory containing build outputs.
+AURLens reviews all supported files in the checkout, including hidden files, helper scripts, `src`, and `pkg`. Git ignore files do not hide content. Only the actual root `.git` metadata directory is excluded and reported. Text with control characters, symlinks, hardlinks, special files, and exceeded limits make coverage incomplete.
+
+A file that is not text, such as an icon or a binary PGP key, does not make the review incomplete. Its hash becomes part of the snapshot digest, so a later change to it is noticed, and the report lists it as uninspected with an `OPAQUE-FILE` finding: `review` the first time and whenever it changes, `info` when it is byte for byte the file of the baseline. A file that has to be text to be reviewed at all (the PKGBUILD, `.SRCINFO`, install scripts, `*.sh`, patches, `.desktop` and `.service` files, anything that starts with `#!`) still makes coverage incomplete when it is not. See [rules and severities](docs/rules.md). Prefer a fresh checkout rather than a directory containing build outputs.
 
 The default limits are 256 files, 1,024 directory entries, 16 directory levels, 256 KiB per file, and 2 MiB total text. [The threat model](docs/threat-model.md) describes these boundaries and the limits of source-pattern matching.
 

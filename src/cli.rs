@@ -282,6 +282,7 @@ fn config_error(code: &str, json: bool) -> ExitCode {
             reviewed_bytes: 0,
             excluded: vec![],
             issues: vec![code.into()],
+            uninspected: vec![],
         },
         ai: crate::AiResult::NotRun {
             reason: "invalid_configuration".into(),
@@ -343,6 +344,18 @@ fn render(report: &crate::ReviewReport) -> String {
                 change.path.escape_debug()
             ));
         }
+    }
+    if !report.coverage.uninspected.is_empty() {
+        lines.push(format!(
+            "Not text, not inspected (covered by the snapshot digest): {}",
+            report
+                .coverage
+                .uninspected
+                .iter()
+                .map(|path| path.escape_debug().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
     }
     lines.push(report.coverage.scope.clone());
     lines.push(report.notice.clone());

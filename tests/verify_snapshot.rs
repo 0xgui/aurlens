@@ -216,7 +216,8 @@ fn invalid_paths_and_unsupported_inputs_emit_machine_reports() {
     assert_eq!(result["issues"], json!(["missing_pkgbuild"]));
 
     let root = package("pkgname=example\n");
-    fs::write(root.path().join("binary"), [0_u8, 255]).unwrap();
+    // An install script has to be text to be reviewed at all.
+    fs::write(root.path().join("binary.install"), [0_u8, 255]).unwrap();
     let result = report(&verify(root.path(), &digest, true), "incomplete", 3);
     assert_eq!(result["issues"], json!(["unsupported_text"]));
 }
