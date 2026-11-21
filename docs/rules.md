@@ -30,13 +30,13 @@ A rule marked **commands** in the tables skips a line that only prints text, suc
 - it has no `$(…)`, no backtick, no `$'…'` string and no `${…}` with quoting inside; and
 - it does not end in a backslash that joins it to the next line.
 
-Inside quotes `>` is a character, so `echo "==> add this to ~/.bashrc"` is printed text and `echo x >> ~/.bashrc` is not. A comment after the message ends the line: a quote character in it opens nothing. Anything this cannot read with certainty is treated as an ordinary line.
+Inside quotes `>` is a character, so `echo "==> add this to ~/.bashrc"` is printed text and `echo x >> ~/.bashrc` is not. A comment after the message ends the line: a quote character in it opens nothing. Anything this cannot read with certainty is treated as an ordinary line, and a message that spans lines and ends on a line that does more than print (`" | sh`) is not printed text on any of its lines.
 
 The body of a here-document that `cat` prints (`cat <<'EOF'`, to the terminal or to standard error) is printed text too, line by line, unless the line has a `$(…)` or a backtick. A here-document that is written to a file, piped on, or handed to anything other than `cat` is not.
 
 If any file of the checkout gives one of the printing commands another meaning (`msg() { "$@"; }`, `alias echo=…`), no line of the checkout is treated as printed text.
 
-A `block` rule that matches printed text is reported as `review`, with a message that says so: advice such as "to install, run `curl … | sh`" is not that command being run, and it is still something a person should see.
+A `block` rule that matches printed text is reported as `review`, with a message that says so: advice such as "to install, run `curl … | sh`" is not that command being run, and it is still something a person should see. This holds only where nothing in the checkout could run text it is handed: with a pipe into a shell, `eval`, `source` or `.`, a shell's `-c`, `<<<` or `xargs` anywhere in it, the match blocks as usual.
 
 A message printed inside a subshell or function whose output is piped elsewhere is still taken for a message: the rules read one line at a time.
 

