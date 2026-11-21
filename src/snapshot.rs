@@ -324,33 +324,70 @@ impl Collector<'_> {
         if !stable(before, &metadata(&file, Some(path))?) || bytes.len() as u64 != before.size() {
             return Err(changed(Some(path)));
         }
-        let text = String::from_utf8(bytes).map_err(|_| {
+        // Text is inspected. A file that is not text is kept by its hash:
+        // the snapshot covers it, so a change to it is noticed, and the
+        // report says that nothing looked inside. Refusing the whole checkout
+        // for an icon protects nobody. What has to be text to be reviewed at
+        // all (the recipe, an install script, anything written as a script)
+        // is still refused when it is not.
+        let sha256 = format!("{:x}", Sha256::digest(&bytes));
+        let size = bytes.len();
+        let not_text = || {
             error(
                 "unsupported_text",
                 Some(path),
                 "File must contain UTF-8 text",
             )
-        })?;
-        if text
-            .chars()
-            .any(|c| c.is_control() && !matches!(c, '\t' | '\n' | '\r'))
-        {
-            return Err(error(
-                "unsupported_text",
-                Some(path),
-                "Binary or control-character content is unsupported",
-            ));
-        }
-        self.bytes += text.len();
-        let sha256 = format!("{:x}", Sha256::digest(text.as_bytes()));
+        };
+        let (text, opaque) = match String::from_utf8(bytes) {
+            Ok(text) if !text.contains('\0') => {
+                if text
+                    .chars()
+                    .any(|c| c.is_control() && !matches!(c, '\t' | '\n' | '\r'))
+                {
+                    // Text with control characters in it reads differently
+                    // from how it runs. That is not an image.
+                    return Err(error(
+                        "unsupported_text",
+                        Some(path),
+                        "Binary or control-character content is unsupported",
+                    ));
+                }
+                (text, false)
+            }
+            Ok(text) if must_be_text(path, text.as_bytes()) => return Err(not_text()),
+            Err(invalid) if must_be_text(path, invalid.as_bytes()) => return Err(not_text()),
+            _ => (String::new(), true),
+        };
+        self.bytes += size;
         self.files.push(PackageFile {
             path: path.to_owned(),
             mode: before.mode() & 0o7777,
             text,
             sha256,
+            opaque,
+            size,
         });
         Ok(())
     }
+}
+
+/// Files that are read as shell or that the tools read as text. One of these
+/// that is not text cannot be reviewed, and "not inspected" is no answer.
+fn must_be_text(path: &str, bytes: &[u8]) -> bool {
+    let name = path.rsplit('/').next().unwrap_or(path);
+    path == "PKGBUILD"
+        || name == ".SRCINFO"
+        // Only the root `.git` is git's own. Anything else by that name is
+        // part of the recipe and is reviewed as text or not at all.
+        || path.split('/').any(|part| part == ".git")
+        || [
+            ".install", ".sh", ".bash", ".zsh", ".py", ".pl", ".rb", ".lua", ".js", ".patch",
+            ".diff", ".desktop", ".service",
+        ]
+        .iter()
+        .any(|extension| name.ends_with(extension))
+        || bytes.starts_with(b"#!")
 }
 
 fn field(hash: &mut Sha256, value: &[u8]) {
@@ -359,9 +396,18 @@ fn field(hash: &mut Sha256, value: &[u8]) {
 }
 
 fn digest(files: &[PackageFile], directories: &[(String, u32)]) -> String {
+    // A text file enters with its content, as it always has, so the digest
+    // of a checkout of text files is what it was. An opaque file enters
+    // under its own kind with the hash of its bytes.
     let mut records: Vec<(&str, u8, u32, &[u8])> = files
         .iter()
-        .map(|file| (file.path.as_str(), b'f', file.mode, file.text.as_bytes()))
+        .map(|file| {
+            if file.opaque {
+                (file.path.as_str(), b'o', file.mode, file.sha256.as_bytes())
+            } else {
+                (file.path.as_str(), b'f', file.mode, file.text.as_bytes())
+            }
+        })
         .collect();
     records.extend(
         directories
@@ -652,10 +698,90 @@ mod tests {
         fs::hard_link(root.path().join("PKGBUILD"), root.path().join("hard")).unwrap();
         assert_eq!(failure(root.path()).code, "hardlink");
         fs::remove_file(root.path().join("hard")).unwrap();
-        for bytes in [&[0][..], &[255][..], &[27][..], "\u{0085}".as_bytes()] {
-            fs::write(root.path().join("binary"), bytes).unwrap();
+        // Text with control characters reads differently from how it runs.
+        for bytes in [&[27][..], "\u{0085}".as_bytes(), b"echo hi\x1b[8m; true\n"] {
+            fs::write(root.path().join("helper"), bytes).unwrap();
             assert_eq!(failure(root.path()).code, "unsupported_text");
         }
+        fs::remove_file(root.path().join("helper")).unwrap();
+        // What is read as shell, or by the packaging tools as text, has to be text.
+        for name in [
+            "x.install",
+            "build.sh",
+            "fix.patch",
+            "app.desktop",
+            ".SRCINFO",
+        ] {
+            fs::write(root.path().join(name), [0x89, b'P', b'N', b'G', 0, 255]).unwrap();
+            assert_eq!(failure(root.path()).code, "unsupported_text", "{name}");
+            fs::remove_file(root.path().join(name)).unwrap();
+        }
+        fs::write(root.path().join("tool"), b"#!/bin/sh\necho hi\0\n").unwrap();
+        assert_eq!(failure(root.path()).code, "unsupported_text");
+        fs::remove_file(root.path().join("tool")).unwrap();
+        fs::write(root.path().join("PKGBUILD"), [b'p', 0, 255]).unwrap();
+        assert_eq!(failure(root.path()).code, "unsupported_text");
+    }
+
+    #[test]
+    fn a_file_that_is_not_text_is_kept_by_its_hash() {
+        let root = package();
+        let png = [
+            0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, 255, 254,
+        ];
+        fs::write(root.path().join("icon.png"), png).unwrap();
+        fs::create_dir_all(root.path().join("keys/pgp")).unwrap();
+        fs::write(
+            root.path().join("keys/pgp/ABCD.asc"),
+            [0x99, 0x01, 0x0d, 0x04, 0, 200],
+        )
+        .unwrap();
+        let first = snapshot(root.path());
+        let icon = first
+            .files
+            .iter()
+            .find(|file| file.path == "icon.png")
+            .unwrap();
+        assert!(icon.opaque && icon.text.is_empty());
+        assert_eq!(icon.size, png.len());
+        assert_eq!(icon.sha256, format!("{:x}", Sha256::digest(png)));
+        assert!(
+            first
+                .files
+                .iter()
+                .any(|file| file.path == "keys/pgp/ABCD.asc" && file.opaque)
+        );
+        assert!(
+            first
+                .files
+                .iter()
+                .any(|file| file.path == "PKGBUILD" && !file.opaque)
+        );
+        verify(root.path(), &first, &Limits::default()).unwrap();
+        // One changed byte in it changes the snapshot.
+        let mut other = png;
+        other[13] = 0;
+        fs::write(root.path().join("icon.png"), other).unwrap();
+        let second = snapshot(root.path());
+        assert_ne!(second.digest, first.digest);
+        assert!(verify(root.path(), &first, &Limits::default()).is_err());
+        let changes = compare(&first, &second);
+        assert_eq!(changes.len(), 1);
+        assert_eq!(
+            (changes[0].path.as_str(), changes[0].kind.as_str()),
+            ("icon.png", "modified")
+        );
+        // A text file and an opaque file with the same bytes as a digest
+        // string cannot stand in for each other.
+        fs::write(root.path().join("icon.png"), &icon.sha256).unwrap();
+        assert_ne!(snapshot(root.path()).digest, first.digest);
+        // It counts against the size limits like any other file.
+        fs::write(
+            root.path().join("icon.png"),
+            vec![0u8; Limits::default().max_file_bytes + 1],
+        )
+        .unwrap();
+        assert_eq!(failure(root.path()).code, "file_byte_limit");
     }
 
     #[test]

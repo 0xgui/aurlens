@@ -110,12 +110,22 @@ fn full_review_report() -> ReviewReport {
         exit_code: Decision::ManualReview.exit_code(),
         snapshot_digest: Some("a".repeat(64)),
         baseline_digest: Some("b".repeat(64)),
-        files: vec![FileSummary {
-            path: "PKGBUILD".into(),
-            mode: 0o644,
-            size: 16,
-            sha256: "c".repeat(64),
-        }],
+        files: vec![
+            FileSummary {
+                path: "PKGBUILD".into(),
+                mode: 0o644,
+                size: 16,
+                sha256: "c".repeat(64),
+                opaque: false,
+            },
+            FileSummary {
+                path: "icon.png".into(),
+                mode: 0o644,
+                size: 2048,
+                sha256: "d".repeat(64),
+                opaque: true,
+            },
+        ],
         findings: vec![
             Finding {
                 rule_id: "FINDING-LIMIT".into(),
@@ -148,6 +158,7 @@ fn full_review_report() -> ReviewReport {
             reviewed_bytes: 16,
             excluded: vec![".git".into()],
             issues: vec![],
+            uninspected: vec!["icon.png".into()],
         },
         ai: AiResult::Complete {
             model: "fixture-model".into(),

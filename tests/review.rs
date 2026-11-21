@@ -460,6 +460,128 @@ fn an_ai_remark_cannot_lower_what_a_rule_found() {
 }
 
 #[test]
+fn a_file_that_is_not_text_is_covered_reported_and_never_sent() {
+    let png: &[u8] = &[
+        0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, 255, 254,
+    ];
+    let recipe = "pkgname=example\npackage() { install -Dm644 icon.png \"$pkgdir/usr/share/pixmaps/example.png\"; }\n";
+    let root = package(recipe);
+    fs::write(root.path().join("icon.png"), png).unwrap();
+
+    // New to the reader: a decision, with the file named and nothing refused.
+    let report = review(root.path(), &ReviewOptions::default());
+    assert_eq!(report.decision, Decision::ManualReview);
+    assert!(report.coverage.complete);
+    assert_eq!(report.coverage.uninspected, ["icon.png"]);
+    assert_eq!(report.coverage.reviewed_files, 1);
+    let icon = report
+        .files
+        .iter()
+        .find(|file| file.path == "icon.png")
+        .unwrap();
+    assert!(icon.opaque && icon.size == png.len());
+    let finding = report
+        .findings
+        .iter()
+        .find(|f| f.rule_id == "OPAQUE-FILE")
+        .unwrap();
+    assert_eq!(finding.severity, Severity::Review);
+    assert!(finding.message.contains("icon.png"));
+
+    // The same bytes as in the approved baseline: nothing to decide again.
+    let approved = package(recipe);
+    fs::write(approved.path().join("icon.png"), png).unwrap();
+    let again = review(
+        root.path(),
+        &ReviewOptions {
+            baseline: Some(approved.path().into()),
+            ..Default::default()
+        },
+    );
+    assert_eq!(again.decision, Decision::NoFindings);
+    assert_eq!(again.findings.len(), 1);
+    assert_eq!(again.findings[0].severity, Severity::Info);
+    assert_eq!(again.snapshot_digest, report.snapshot_digest);
+
+    // One byte changed in it: the snapshot differs and it is a decision again.
+    let mut changed = png.to_vec();
+    changed[13] = 0;
+    fs::write(root.path().join("icon.png"), &changed).unwrap();
+    let after = review(
+        root.path(),
+        &ReviewOptions {
+            baseline: Some(approved.path().into()),
+            ..Default::default()
+        },
+    );
+    assert_eq!(after.decision, Decision::ManualReview);
+    assert_ne!(after.snapshot_digest, report.snapshot_digest);
+    assert!(
+        after
+            .changes
+            .unwrap()
+            .iter()
+            .any(|change| change.path == "icon.png" && change.kind == "modified")
+    );
+
+    // A model is told the file exists, with its hash and size. Its bytes stay here.
+    let (ai, handle) = model_server(|data| {
+        let files = data["files"].as_array().unwrap();
+        let icon = files
+            .iter()
+            .find(|file| file["path"] == "icon.png")
+            .unwrap();
+        assert_eq!(icon["opaque"], true);
+        assert_eq!(icon["size"], 14);
+        assert!(icon.get("text").is_none());
+        assert!(
+            files
+                .iter()
+                .any(|file| file["path"] == "PKGBUILD" && file["text"].is_string())
+        );
+        empty_opinion(&data)
+    });
+    let with_ai = review(
+        root.path(),
+        &ReviewOptions {
+            ai: Some(ai),
+            ..Default::default()
+        },
+    );
+    handle.join().unwrap();
+    assert!(matches!(with_ai.ai, AiResult::Complete { .. }));
+    assert_eq!(with_ai.decision, Decision::ManualReview);
+}
+
+#[test]
+fn what_has_to_be_text_is_still_refused_when_it_is_not() {
+    for name in ["hook.install", "build.sh", "fix.patch"] {
+        let root = package("pkgname=example\n");
+        fs::write(root.path().join(name), [0x89, b'P', b'N', b'G', 0, 255]).unwrap();
+        let report = review(root.path(), &ReviewOptions::default());
+        assert_eq!(report.decision, Decision::Incomplete, "{name}");
+        assert_eq!(report.coverage.issues, ["unsupported_text"], "{name}");
+    }
+    // Handing a file nobody could read to an interpreter is a finding of its own.
+    let root = package("pkgname=example\nbuild() { bash ./blob; }\n");
+    fs::write(root.path().join("blob"), [0, 1, 2, 255]).unwrap();
+    let report = review(root.path(), &ReviewOptions::default());
+    assert_eq!(report.decision, Decision::ManualReview);
+    assert!(
+        report
+            .findings
+            .iter()
+            .any(|f| f.rule_id == "OPAQUE-RUN" && f.evidence[0].path == "PKGBUILD")
+    );
+    let root = package("pkgname=example\nbuild() { tail -c +9 blob | sh; }\n");
+    fs::write(root.path().join("blob"), [0, 1, 2, 255]).unwrap();
+    assert_eq!(
+        review(root.path(), &ReviewOptions::default()).decision,
+        Decision::Blocked
+    );
+}
+
+#[test]
 fn changed_source_or_baseline_during_ai_prevents_completion() {
     for change_baseline in [false, true] {
         let root = package("pkgname=example\n");

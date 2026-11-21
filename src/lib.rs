@@ -82,6 +82,9 @@ pub fn review(path: &Path, options: &ReviewOptions) -> ReviewReport {
         .as_ref()
         .zip(current.as_ref())
         .map(|(old, new)| snapshot::compare(old, new));
+    if let Some(snapshot) = &current {
+        findings.extend(rules::opaque(snapshot, previous.as_ref()));
+    }
 
     let ai = match (&options.ai, &current, issues.is_empty()) {
         (Some(config), Some(snapshot), true) => {
@@ -133,11 +136,14 @@ pub fn review(path: &Path, options: &ReviewOptions) -> ReviewReport {
     let coverage = Coverage {
         complete,
         policy: "whole-checkout-v1".into(),
-        scope: "Local UTF-8 text files only. Upstream downloads, binaries, and dependency packages are not reviewed.".into(),
-        reviewed_files: current.as_ref().map_or(0, |s| s.files.len()),
+        scope: "Local UTF-8 text files only. Files that are not text are covered by the snapshot digest and listed as uninspected. Upstream downloads, binaries, and dependency packages are not reviewed.".into(),
+        reviewed_files: current.as_ref().map_or(0, |s| s.files.iter().filter(|f| !f.opaque).count()),
         reviewed_bytes: current.as_ref().map_or(0, |s| s.files.iter().map(|f| f.text.len()).sum()),
         excluded: current.as_ref().map_or_else(Vec::new, |s| s.excluded.clone()),
         issues,
+        uninspected: current.as_ref().map_or_else(Vec::new, |s| {
+            s.files.iter().filter(|f| f.opaque).map(|f| f.path.clone()).collect()
+        }),
     };
     ReviewReport {
         schema_version: 1,
@@ -152,8 +158,9 @@ pub fn review(path: &Path, options: &ReviewOptions) -> ReviewReport {
                 .map(|f| FileSummary {
                     path: f.path.clone(),
                     mode: f.mode,
-                    size: f.text.len(),
+                    size: f.size,
                     sha256: f.sha256.clone(),
+                    opaque: f.opaque,
                 })
                 .collect()
         }),

@@ -55,14 +55,24 @@ A line that matches a `block` rule is reported for that rule alone.
 | `OUTSIDE-WRITE` | Recipe | A redirect or `tee` into a system directory instead of the package directory. |
 | `INSTALL-DOWNLOAD` | Install script | A download or a language package manager run as root at install time. |
 
+| `OPAQUE-FILE` | The checkout | A file that is not text, when it is new or has changed since the baseline. |
+| `OPAQUE-RUN` | Scripts | A file that is not text handed to an interpreter, sourced, or made executable. Piped into a shell, it blocks. |
+
 ## Info
 
 | Rule | Looks in | Matches |
 | --- | --- | --- |
+| `OPAQUE-FILE` | The checkout | A file that is not text and is byte for byte the file of the baseline. |
 | `SKIPPED-CHECKSUM` | Recipe | A `SKIP` checksum for a version-control source, or for a file verified by a pinned PGP signature. |
 | `SANDBOX-HELPER` | Code | Chromium's `chrome-sandbox` helper made setuid root. |
 | `INSTALL-SERVICE` | Install script | `systemctl` enabling, starting or stopping a service. |
 | `PRELOAD` | Code | `LD_PRELOAD=`. |
+
+## Files that are not text
+
+An icon or a binary key is kept by its hash and listed in `coverage.uninspected`. No rule reads it and no model receives it. `OPAQUE-FILE` asks for a decision when the file is new to the reader or its bytes changed, and is a note when the baseline has the same file. `OPAQUE-RUN` looks at what the scripts of the recipe do with such a file.
+
+What has to be text to be reviewed at all is not treated this way: the PKGBUILD, `.SRCINFO`, `*.install`, `*.sh`, `*.bash`, `*.zsh`, `*.py`, `*.pl`, `*.rb`, `*.lua`, `*.js`, `*.patch`, `*.diff`, `*.desktop`, `*.service`, anything below a directory named `.git`, and any file that starts with `#!`. One of these that is not text makes the review `incomplete`, as before.
 
 ## Skipped checksums
 

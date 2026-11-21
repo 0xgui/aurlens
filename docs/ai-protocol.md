@@ -36,7 +36,7 @@ The process runs in a private empty directory with a read-only sandbox, shell ex
 
 ## HTTP request and shared opinion schema
 
-The request contains `model`, `response_format = {"type":"json_object"}`, and system and user messages. The user message is a JSON string containing `snapshot_digest`, `files`, and `changes`. Each file has a relative `path`, `mode`, `sha256`, and full reviewed `text`. `changes` is null without a baseline and a list of change records otherwise. No tools are supplied.
+The request contains `model`, `response_format = {"type":"json_object"}`, and system and user messages. The user message is a JSON string containing `snapshot_digest`, `files`, and `changes`. Each text file has a relative `path`, `mode`, `sha256`, and full reviewed `text`. A file that is not text has `path`, `mode`, `sha256`, `size` and `"opaque": true`, and no `text`: its bytes are not sent. Evidence cannot point into such a file. `changes` is null without a baseline and a list of change records otherwise. No tools are supplied.
 
 This is the [Chat Completions request shape](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create). JSON mode alone does not validate the application schema; AURLens validates the model's response separately.
 
