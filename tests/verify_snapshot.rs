@@ -28,6 +28,9 @@ fn scanned_digest(path: &Path, exit_code: i32) -> String {
     let output = command()
         .arg("scan")
         .arg(path)
+        // A digest does not depend on the AI review, and a test must not use
+        // (or need) whatever connection the person running it has saved.
+        .arg("--no-ai")
         .arg("--json")
         .output()
         .unwrap();

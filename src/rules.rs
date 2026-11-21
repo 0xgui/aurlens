@@ -190,9 +190,8 @@ fn arrays(text: &str) -> Vec<(String, Vec<(usize, String)>)> {
         let mut word = String::new();
         let mut in_word = false;
         let mut quote: Option<char> = None;
-        let mut chars = rest.chars().peekable();
         let mut closed = false;
-        while let Some(c) = chars.next() {
+        for c in rest.chars() {
             match (quote, c) {
                 (Some(q), c) if c == q => quote = None,
                 (Some(_), c) => word.push(c),
