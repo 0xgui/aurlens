@@ -324,12 +324,14 @@ impl Collector<'_> {
         if !stable(before, &metadata(&file, Some(path))?) || bytes.len() as u64 != before.size() {
             return Err(changed(Some(path)));
         }
-        // Text is inspected. A file that is not text is kept by its hash:
-        // the snapshot covers it, so a change to it is noticed, and the
+        // Text is inspected. An image, a PDF or a binary key is kept by its
+        // hash: the snapshot covers it, so a change to it is noticed, and the
         // report says that nothing looked inside. Refusing the whole checkout
-        // for an icon protects nobody. What has to be text to be reviewed at
-        // all (the recipe, an install script, anything written as a script)
-        // is still refused when it is not.
+        // for an icon protects nobody. Anything else that is not text is
+        // refused as before: a text file with a stray byte in it is not an
+        // icon, and neither is an archive or a program. So is what has to be
+        // text to be reviewed at all (the recipe, an install script, anything
+        // written as a script), whatever it starts with.
         let sha256 = format!("{:x}", Sha256::digest(&bytes));
         let size = bytes.len();
         let not_text = || {
@@ -339,6 +341,7 @@ impl Collector<'_> {
                 "File must contain UTF-8 text",
             )
         };
+        let format = binary_format(&bytes);
         let (text, opaque) = match String::from_utf8(bytes) {
             Ok(text) if !text.contains('\0') => {
                 if text
@@ -357,6 +360,7 @@ impl Collector<'_> {
             }
             Ok(text) if must_be_text(path, text.as_bytes()) => return Err(not_text()),
             Err(invalid) if must_be_text(path, invalid.as_bytes()) => return Err(not_text()),
+            _ if format.is_none() => return Err(not_text()),
             _ => (String::new(), true),
         };
         self.bytes += size;
@@ -367,6 +371,7 @@ impl Collector<'_> {
             sha256,
             opaque,
             size,
+            format: if opaque { format.unwrap_or("") } else { "" },
         });
         Ok(())
     }
@@ -383,11 +388,53 @@ fn must_be_text(path: &str, bytes: &[u8]) -> bool {
         || path.split('/').any(|part| part == ".git")
         || [
             ".install", ".sh", ".bash", ".zsh", ".py", ".pl", ".rb", ".lua", ".js", ".patch",
-            ".diff", ".desktop", ".service",
+            ".diff", ".desktop", ".conf", ".hook", ".rules", ".service", ".socket", ".timer",
+            ".path", ".mount", ".target",
         ]
         .iter()
         .any(|extension| name.ends_with(extension))
         || bytes.starts_with(b"#!")
+}
+
+/// The kinds of file that are not text and that a recipe has reason to carry,
+/// told by how they start: an icon, a licence as a PDF, a binary OpenPGP key.
+/// A file that starts like one and is mostly readable text is not one.
+///
+/// This says what a file claims to be, not what all of it is. It keeps a
+/// text file with a stray byte, an archive or a program from being waved
+/// through as "an icon"; what keeps an accepted file from mattering is that
+/// its hash is in the snapshot and that running it is a finding.
+fn binary_format(bytes: &[u8]) -> Option<&'static str> {
+    let format = match bytes {
+        [0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n', ..] => "PNG image",
+        [0xff, 0xd8, 0xff, ..] => "JPEG image",
+        [b'G', b'I', b'F', b'8', b'7' | b'9', b'a', ..] => "GIF image",
+        [
+            b'R',
+            b'I',
+            b'F',
+            b'F',
+            _,
+            _,
+            _,
+            _,
+            b'W',
+            b'E',
+            b'B',
+            b'P',
+            ..,
+        ] => "WebP image",
+        [0, 0, 1, 0, ..] => "ICO icon",
+        [b'%', b'P', b'D', b'F', b'-', ..] => "PDF document",
+        // A public-key packet, old or new format, then the key version.
+        [0x99, _, _, 3..=6, ..] | [0x98, _, 3..=6, ..] | [0xc6, _, 3..=6, ..] => "OpenPGP key",
+        _ => return None,
+    };
+    let readable = bytes
+        .iter()
+        .filter(|byte| matches!(byte, 0x20..=0x7e | b'\t' | b'\n' | b'\r'))
+        .count();
+    (bytes.len() < 64 || readable * 10 < bytes.len() * 6).then_some(format)
 }
 
 fn field(hash: &mut Sha256, value: &[u8]) {
@@ -782,6 +829,69 @@ mod tests {
         )
         .unwrap();
         assert_eq!(failure(root.path()).code, "file_byte_limit");
+    }
+
+    #[test]
+    fn only_an_image_a_pdf_or_a_key_is_kept_without_being_read() {
+        let png: &[u8] = &[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
+        let noise: Vec<u8> = (0..200u32).map(|i| (i * 37 % 251) as u8 | 0x80).collect();
+        let accepted: [(&str, Vec<u8>, &str); 5] = [
+            ("icon.png", [png, &noise].concat(), "PNG image"),
+            (
+                "photo.jpg",
+                [&[0xff, 0xd8, 0xff, 0xe0][..], &noise].concat(),
+                "JPEG image",
+            ),
+            ("app.ico", [&[0, 0, 1, 0][..], &noise].concat(), "ICO icon"),
+            (
+                "LICENSE.pdf",
+                [b"%PDF-1.4\n", &noise[..]].concat(),
+                "PDF document",
+            ),
+            (
+                "key.gpg",
+                [&[0x99, 0x02, 0x0d, 0x04][..], &noise].concat(),
+                "OpenPGP key",
+            ),
+        ];
+        for (name, bytes, format) in &accepted {
+            let root = package();
+            fs::write(root.path().join(name), bytes).unwrap();
+            let snapshot = snapshot(root.path());
+            let file = snapshot
+                .files
+                .iter()
+                .find(|file| file.path == *name)
+                .unwrap();
+            assert!(file.opaque, "{name}");
+            assert_eq!(file.format, *format);
+        }
+        // A text file with a stray byte in it is not an icon. Neither is an
+        // archive, a program, or bytes nothing recognises.
+        let hook = b"[Trigger]\nOperation = Install\n# \xff\n[Action]\nWhen = PostTransaction\nExec = /bin/sh -c 'id'\n";
+        let refused: [(&str, Vec<u8>); 6] = [
+            ("zz-probe.txt", hook.to_vec()),
+            ("notes.txt", b"post_install() {\n  id\n}\n\0".to_vec()),
+            ("vendor.tar.gz", [&[0x1f, 0x8b, 0x08, 0][..], &noise].concat()),
+            ("probe-bin", [&b"\x7fELF\x02\x01\x01\0"[..], &noise].concat()),
+            ("blob.bin", vec![0, 1, 2, 0xff, 0xfe, 0x20, 0x62, 0x69]),
+            // Starts like an image, and is a script behind that.
+            (
+                "icon.png",
+                [png, &b"\necho this is a long shell script that only starts like an image\nid\nuname -a\n\xff"[..]].concat(),
+            ),
+        ];
+        for (name, bytes) in &refused {
+            let root = package();
+            fs::write(root.path().join(name), bytes).unwrap();
+            assert_eq!(failure(root.path()).code, "unsupported_text", "{name}");
+        }
+        // What has to be text is refused whatever it starts with.
+        for name in ["zz.hook", "99-x.rules", "app.conf", "x.install", "x.timer"] {
+            let root = package();
+            fs::write(root.path().join(name), [png, &noise].concat()).unwrap();
+            assert_eq!(failure(root.path()).code, "unsupported_text", "{name}");
+        }
     }
 
     #[test]

@@ -562,9 +562,16 @@ fn what_has_to_be_text_is_still_refused_when_it_is_not() {
         assert_eq!(report.decision, Decision::Incomplete, "{name}");
         assert_eq!(report.coverage.issues, ["unsupported_text"], "{name}");
     }
-    // Handing a file nobody could read to an interpreter is a finding of its own.
+    // Bytes that are neither text nor a format a recipe carries are refused too.
     let root = package("pkgname=example\nbuild() { bash ./blob; }\n");
     fs::write(root.path().join("blob"), [0, 1, 2, 255]).unwrap();
+    let report = review(root.path(), &ReviewOptions::default());
+    assert_eq!(report.decision, Decision::Incomplete);
+    assert_eq!(report.coverage.issues, ["unsupported_text"]);
+    // Handing a file nobody could read to an interpreter is a finding of its own.
+    let png = [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 0, 255];
+    let root = package("pkgname=example\nbuild() { bash ./icon.png; }\n");
+    fs::write(root.path().join("icon.png"), png).unwrap();
     let report = review(root.path(), &ReviewOptions::default());
     assert_eq!(report.decision, Decision::ManualReview);
     assert!(
@@ -573,8 +580,15 @@ fn what_has_to_be_text_is_still_refused_when_it_is_not() {
             .iter()
             .any(|f| f.rule_id == "OPAQUE-RUN" && f.evidence[0].path == "PKGBUILD")
     );
-    let root = package("pkgname=example\nbuild() { tail -c +9 blob | sh; }\n");
-    fs::write(root.path().join("blob"), [0, 1, 2, 255]).unwrap();
+    let root = package("pkgname=example\nbuild() { tail -c +9 icon.png | sh; }\n");
+    fs::write(root.path().join("icon.png"), png).unwrap();
+    assert_eq!(
+        review(root.path(), &ReviewOptions::default()).decision,
+        Decision::Blocked
+    );
+    // So is naming it as the script pacman runs as root.
+    let root = package("pkgname=example\n_i=icon.png\ninstall=$_i\n");
+    fs::write(root.path().join("icon.png"), png).unwrap();
     assert_eq!(
         review(root.path(), &ReviewOptions::default()).decision,
         Decision::Blocked

@@ -85,6 +85,9 @@ pub struct PackageFile {
     pub opaque: bool,
     /// The size of the file in bytes.
     pub size: usize,
+    /// For an opaque file, the format its first bytes are those of
+    /// ("PNG image"). Empty for a text file.
+    pub format: &'static str,
 }
 
 #[derive(Clone, Debug)]
