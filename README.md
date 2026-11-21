@@ -76,6 +76,8 @@ Findings have a severity: `block`, `review` or `info`. An `info` finding is list
 
 Every nonzero result requires attention. These codes are not a risk ranking. Incomplete reviews retain any findings already observed. Never treat a successful HTTP request or JSON parse as an approval to build.
 
+Each report also gives one word of advice: **Looks fine**, **Check first**, **Be careful**, **Do not install**, or **Could not check** (`risk` in the JSON: `low`, `medium`, `high`, `critical`, `unknown`). The decision says what has to happen; the advice says how hard to look. "Looks fine" is about the recipe, not about the software it downloads. See [rules and severities](docs/rules.md#advice).
+
 Usage errors, such as a missing path or an unknown option, print a message to standard error and exit 64. They exited 2 before version 0.2.0, which collided with `blocked`. `--help` and `--version` exit 0.
 
 `aurlens schema review` and `aurlens schema verify` print the JSON Schema (draft 2020-12) of the `scan --json` and `verify --json` reports. The same files are in [`schemas/`](schemas). A later release can add fields without changing the schema version, so ignore fields you do not know.

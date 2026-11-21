@@ -89,6 +89,7 @@ impl Contract {
 
 fn finding(source: &str, severity: Severity) -> Finding {
     Finding {
+        risk: Default::default(),
         rule_id: "AI-001".into(),
         source: source.into(),
         severity,
@@ -107,6 +108,7 @@ fn full_review_report() -> ReviewReport {
         schema_version: 1,
         tool_version: env!("CARGO_PKG_VERSION").into(),
         decision: Decision::ManualReview,
+        risk: aurlens::Risk::High,
         exit_code: Decision::ManualReview.exit_code(),
         snapshot_digest: Some("a".repeat(64)),
         baseline_digest: Some("b".repeat(64)),
@@ -128,6 +130,7 @@ fn full_review_report() -> ReviewReport {
         ],
         findings: vec![
             Finding {
+                risk: Default::default(),
                 rule_id: "FINDING-LIMIT".into(),
                 source: "engine".into(),
                 severity: Severity::Info,

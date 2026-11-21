@@ -569,6 +569,7 @@ fn run(
         .into_iter()
         .enumerate()
         .map(|(index, finding)| Finding {
+            risk: Default::default(),
             rule_id: format!("AI-{:03}", index + 1),
             source: "ai".into(),
             severity: match finding.severity {

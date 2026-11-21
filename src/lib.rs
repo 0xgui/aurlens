@@ -12,7 +12,7 @@ pub use ai::{AiError, load_config};
 use model::Snapshot;
 pub use model::{
     AiConfig, AiResult, Change, CodexConfig, Coverage, Decision, Evidence, FileSummary, Finding,
-    HttpConfig, Limits, ReviewReport, Severity, VerificationReport, VerificationStatus,
+    HttpConfig, Limits, ReviewReport, Risk, Severity, VerificationReport, VerificationStatus,
 };
 
 #[derive(Clone, Debug, Default)]
@@ -86,7 +86,7 @@ pub fn review(path: &Path, options: &ReviewOptions) -> ReviewReport {
         findings.extend(rules::opaque(snapshot, previous.as_ref()));
     }
 
-    let ai = match (&options.ai, &current, issues.is_empty()) {
+    let mut ai = match (&options.ai, &current, issues.is_empty()) {
         (Some(config), Some(snapshot), true) => {
             if credential_in_source(config, path, options.baseline.as_deref()) {
                 AiResult::Incomplete {
@@ -133,6 +133,25 @@ pub fn review(path: &Path, options: &ReviewOptions) -> ReviewReport {
         Decision::NoFindings
     };
 
+    // The grade: each finding's, and the highest of them for the review.
+    for finding in &mut findings {
+        finding.risk = rules::risk(finding);
+    }
+    if let AiResult::Complete { findings, .. } = &mut ai {
+        for finding in findings {
+            finding.risk = rules::risk(finding);
+        }
+    }
+    let risk = if decision == Decision::Incomplete {
+        Risk::Unknown
+    } else {
+        findings
+            .iter()
+            .map(|finding| finding.risk)
+            .max()
+            .unwrap_or(Risk::Low)
+    };
+
     let coverage = Coverage {
         complete,
         policy: "whole-checkout-v1".into(),
@@ -149,6 +168,7 @@ pub fn review(path: &Path, options: &ReviewOptions) -> ReviewReport {
         schema_version: 1,
         tool_version: env!("CARGO_PKG_VERSION").into(),
         decision,
+        risk,
         exit_code: decision.exit_code(),
         snapshot_digest: current.as_ref().map(|s| s.digest.clone()),
         baseline_digest: previous.map(|s| s.digest),
@@ -224,6 +244,7 @@ fn record_error(
 ) {
     issues.push(error.code.into());
     findings.push(Finding {
+        risk: Default::default(),
         rule_id: error.code.into(),
         source: "engine".into(),
         severity: Severity::Block,
