@@ -1,4 +1,4 @@
-use aurlens::{AiConfig, AiResult, Decision, HttpConfig, ReviewOptions, review};
+use aurlens::{AiConfig, AiResult, Decision, HttpConfig, ReviewOptions, Severity, review};
 use serde_json::{Value, json};
 use std::fs;
 use std::io::{Read, Write};
@@ -400,6 +400,63 @@ fn grounded_ai_finding_requires_manual_review() {
     handle.join().unwrap();
     assert_eq!(report.decision, Decision::ManualReview);
     assert_eq!(report.findings[0].source, "ai");
+}
+
+#[test]
+fn an_ai_remark_is_reported_and_does_not_ask_for_a_decision() {
+    // The model has a level for what is worth a sentence and no more.
+    let root = package("pkgname=example\nlicense=('MIT')\n");
+    let (ai, handle) = model_server(|data| {
+        json!({
+            "snapshot_digest":data["snapshot_digest"],"summary":"A package called example.",
+            "findings":[{"severity":"info","message":"The licence file is not installed.","evidence":[{"path":"PKGBUILD","line":2,"quote":"license=('MIT')"}]}]
+        })
+    });
+    let report = review(
+        root.path(),
+        &ReviewOptions {
+            ai: Some(ai),
+            ..Default::default()
+        },
+    );
+    handle.join().unwrap();
+    assert_eq!(report.decision, Decision::NoFindings);
+    assert_eq!(report.exit_code, 0);
+    assert_eq!(report.findings.len(), 1);
+    assert_eq!(
+        (
+            report.findings[0].source.as_str(),
+            report.findings[0].severity
+        ),
+        ("ai", Severity::Info)
+    );
+}
+
+#[test]
+fn an_ai_remark_cannot_lower_what_a_rule_found() {
+    // A model that calls everything a remark changes nothing a rule decided.
+    let root = package("pkgname=example\npackage() { chmod 4755 \"$pkgdir/usr/bin/x\"; }\n");
+    let (ai, handle) = model_server(|data| {
+        json!({
+            "snapshot_digest":data["snapshot_digest"],"summary":"Nothing of note.",
+            "findings":[{"severity":"info","message":"A mode is set.","evidence":[{"path":"PKGBUILD","line":2,"quote":"chmod 4755"}]}]
+        })
+    });
+    let report = review(
+        root.path(),
+        &ReviewOptions {
+            ai: Some(ai),
+            ..Default::default()
+        },
+    );
+    handle.join().unwrap();
+    assert_eq!(report.decision, Decision::ManualReview);
+    assert!(
+        report
+            .findings
+            .iter()
+            .any(|f| f.rule_id == "SETUID" && f.severity == Severity::Review)
+    );
 }
 
 #[test]

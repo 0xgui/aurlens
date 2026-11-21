@@ -67,10 +67,12 @@ The text report separates deterministic findings from AI analysis. `--json` retu
 | Exit code | Decision | Meaning |
 | --- | --- | --- |
 | 0 | `no_findings` | No findings within the declared coverage. AI status shows whether a model ran. |
-| 1 | `manual_review` | At least one finding needs review. |
+| 1 | `manual_review` | At least one finding of severity `review`. |
 | 2 | `blocked` | At least one blocking pattern was found. |
 | 3 | `incomplete` | Inputs changed, coverage failed, AI failed, or configuration was invalid. |
 | 64 | None | The command line was invalid. No review ran and no report was printed. |
+
+Findings have a severity: `block`, `review` or `info`. An `info` finding is listed and does not change the decision. [Rules and severities](docs/rules.md) lists every rule, where it looks, and how a skipped checksum is judged.
 
 Every nonzero result requires attention. These codes are not a risk ranking. Incomplete reviews retain any findings already observed. Never treat a successful HTTP request or JSON parse as an approval to build.
 

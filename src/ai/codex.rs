@@ -83,7 +83,7 @@ fn schema() -> Value {
             "path":{"type":"string"},"line":{"type":"integer"},"quote":{"type":"string"}}});
     let finding = json!({"type":"object","additionalProperties":false,
         "required":["severity","message","evidence"],"properties":{
-            "severity":{"type":"string","enum":["review","block"]},
+            "severity":{"type":"string","enum":["info","review","block"]},
             "message":{"type":"string"},"evidence":{"type":"array","items":evidence}}});
     json!({"type":"object","additionalProperties":false,
         "required":["snapshot_digest","summary","findings"],"properties":{
