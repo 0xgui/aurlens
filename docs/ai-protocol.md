@@ -58,7 +58,7 @@ A successful completion has exactly one choice, an assistant text message, and `
 }
 ```
 
-An empty findings list is valid. Severity is `review` or `block`. Each finding needs at least one evidence item. Evidence must point to a current snapshot file, a positive one-based line number, and an exact nonempty substring of that line. Duplicate or unknown inner fields are errors. A returned safety score or verdict is not part of the protocol.
+An empty findings list is valid. Severity is `info`, `review` or `block`. An `info` finding is listed in the report and does not change the decision; `review` leads to `manual_review` and `block` to `blocked`. The instructions sent with every request reserve `review` for a concrete security risk and `block` for behaviour with no honest use in a recipe, and ask for packaging style and facts true of every source build to be `info` or left out. A model cannot lower or remove a finding from a deterministic rule, whatever severity it uses. See [rules and severities](rules.md). Each finding needs at least one evidence item. Evidence must point to a current snapshot file, a positive one-based line number, and an exact nonempty substring of that line. Duplicate or unknown inner fields are errors. A returned safety score or verdict is not part of the protocol.
 
 There may be at most 64 findings and 16 evidence items per finding. The summary is limited to 4,096 bytes; a finding message and an evidence quote are each limited to 2,048 bytes. Configurable request duration is 1 to 120 seconds. Request and response byte limits cannot exceed 8 MiB and 1 MiB respectively.
 
