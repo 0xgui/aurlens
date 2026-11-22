@@ -196,19 +196,184 @@ const SETUID: &str = r"\bchmod\s+(?:-[A-Za-z]+\s+)*(?:0?[2467][0-7]{3}\b|(?:[ugo
 const SETGID_DIRECTORY: &str = r"\binstall\s+(?:-[A-Za-z]+\s+)*-[A-Za-z]*d[A-Za-z]*(?:m\s*|\s+-m\s*|\s+--mode[=\s])0?2[0-7]{3}\b|\bchmod\s+(?:-[A-Za-z]+\s+)*(?:g\+s|0?2[0-7]{3})\s+[\x22\x27]?(?:\$\{?pkgdir\}?[\x22\x27]?)?/var/(?:cache|lib|games|log|spool)/";
 const DROP_HOSTS: &str = r"(?:pastebin\.com|paste\.ee|transfer\.sh|0x0\.st|termbin\.com|ix\.io|file\.io|temp\.sh|bashupload\.com|oshi\.at)";
 
-/// Whether a line that downloads also runs something: an interpreter's
-/// one-liner that fetches, or a shell, an interpreter, `./file`, `source` or
-/// `.` after `;`, `&&` or `||` on the same line (`curl -o i.sh …; sh i.sh`).
-/// A plain download (`curl -LO …`, `_v=$(curl -s …)`) does not.
+/// Whether a line that downloads also runs what it downloads: an
+/// interpreter's one-liner that fetches, a download piped into or
+/// substituted for a shell or an interpreter, or the downloaded file run on
+/// the same line (`curl -o i.sh …; sh i.sh`, see `runs_name`). A plain
+/// download, or one that is unpacked and then built
+/// (`curl -LO …/x.tar.gz && tar xf x.tar.gz; ./configure`), does not.
 fn runs_download(line: &str) -> bool {
     static RUNS: LazyLock<Regex> = LazyLock::new(|| {
         Regex::new(concat!(
             r"\b(?:python[0-9.]*|perl|ruby|node|php)\s+(?:-[A-Za-z]+\s+)*-[ce]\s[^\n]*(?:https?://|urlopen|urlretrieve)",
-            r"|(?:;|&&|\|\|)\s*(?:(?:sudo|doas|exec|env|command)\s+)*(?:(?:/[\w./-]*/)?(?:(?:ba|z|da|k|fi)?sh|python[0-9.]*|perl|ruby|node|php|lua)\b|\./|source\s|\.\s)",
+            r"|\b(?:curl|wget|aria2c)\b[^\n]*\|\s*(?:(?:sudo|doas|env)\s+)*(?:/[\w./-]*/)?(?:(?:ba|z|da|k|fi)?sh|python[0-9.]*|perl|ruby|node|php|lua)\b",
+            r"|\b(?:(?:ba|z|da|k|fi)?sh|python[0-9.]*|perl|ruby|node|php|lua|source|eval)\s+(?:-\S+\s+)*[\x22\x27]?(?:<|\$)\(\s*(?:curl|wget|aria2c)\b",
         ))
         .expect("built-in pattern must compile")
     });
-    RUNS.is_match(line)
+    RUNS.is_match(line) || runs_name(line, &downloaded_names(line))
+}
+
+/// The last part of a path, without a query or a fragment.
+fn last_part(word: &str) -> &str {
+    let word = word.split(['?', '#']).next().unwrap_or(word);
+    word.rsplit('/').next().unwrap_or(word)
+}
+
+/// The names of the files the downloads on `line` save, by the last part of
+/// their path: `curl -o NAME`, `--output NAME`, `curl -O` and `wget` or
+/// `aria2c` without a name (the last part of the URL), `wget -O NAME`,
+/// `aria2c -o NAME`, `> NAME`.
+fn downloaded_names(line: &str) -> Vec<String> {
+    let mut found = Vec::new();
+    for command in line.split([';', '|', '&']) {
+        let words: Vec<String> = command
+            .split_whitespace()
+            .map(|word| word.replace(['"', '\''], ""))
+            .collect();
+        let Some(at) = words
+            .iter()
+            .position(|word| matches!(last_part(word), "curl" | "wget" | "aria2c"))
+        else {
+            continue;
+        };
+        let tool = last_part(&words[at]).to_string();
+        let mut url = None;
+        let mut named = None;
+        let mut remote = tool != "curl";
+        let mut k = at + 1;
+        while k < words.len() {
+            let word = &words[k];
+            k += 1;
+            if let Some(rest) = word.strip_prefix('>') {
+                let rest = rest.trim_start_matches('>');
+                named = if rest.is_empty() {
+                    words.get(k).cloned()
+                } else {
+                    Some(rest.to_string())
+                };
+                break;
+            }
+            if let Some(option) = word.strip_prefix("--") {
+                let (option, value) = match option.split_once('=') {
+                    Some((option, value)) => (option, Some(value.to_string())),
+                    None => (option, None),
+                };
+                let output = match tool.as_str() {
+                    "curl" => option == "output",
+                    "wget" => option == "output-document",
+                    _ => option == "out",
+                };
+                if output {
+                    named = value.or_else(|| words.get(k).cloned());
+                } else if tool == "curl" && option == "remote-name" {
+                    remote = true;
+                }
+            } else if let Some(flags) = word.strip_prefix('-').filter(|f| !f.is_empty()) {
+                let letter = if tool == "wget" { 'O' } else { 'o' };
+                if let Some(position) = flags.find(letter) {
+                    let rest = &flags[position + 1..];
+                    named = if rest.is_empty() {
+                        words.get(k).cloned()
+                    } else {
+                        Some(rest.to_string())
+                    };
+                } else if tool == "curl" && flags.contains('O') {
+                    remote = true;
+                }
+            } else if url.is_none() && word.contains("://") {
+                url = Some(word.clone());
+            }
+        }
+        let name = match named {
+            Some(name) => Some(name),
+            None if remote => url,
+            None => None,
+        };
+        if let Some(name) = name {
+            let name = last_part(&name);
+            if !name.is_empty() && name != "-" {
+                found.push(name.to_string());
+            }
+        }
+    }
+    found
+}
+
+/// Whether a command on `line` runs one of the files called `names`: a
+/// shell or an interpreter given it (`sh i.sh`, `python3 i.py`), `source`
+/// or `.` of it, `./i.sh` or another path to it as the program, or
+/// `chmod` making it executable.
+fn runs_name(line: &str, names: &[String]) -> bool {
+    static RUNNER: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"^(?:(?:ba|z|da|k|fi)?sh|python[0-9.]*|perl|ruby|node|php|lua|source|\.)$")
+            .expect("built-in pattern must compile")
+    });
+    if names.is_empty() {
+        return false;
+    }
+    let is_download = |word: &str| names.iter().any(|name| name == last_part(word));
+    line.split([';', '|', '&', '(', ')', '{', '}', '`'])
+        .any(|command| {
+            let words: Vec<String> = command
+                .split_whitespace()
+                .map(|word| word.replace(['"', '\''], ""))
+                .skip_while(|word| {
+                    matches!(
+                        word.as_str(),
+                        "sudo"
+                            | "doas"
+                            | "exec"
+                            | "env"
+                            | "command"
+                            | "then"
+                            | "do"
+                            | "else"
+                            | "if"
+                            | "elif"
+                            | "while"
+                            | "until"
+                            | "time"
+                            | "nohup"
+                            | "!"
+                            | "$"
+                    ) || word.split_once('=').is_some_and(|(name, _)| {
+                        !name.is_empty()
+                            && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+                    })
+                })
+                .collect();
+            let Some(program) = words.first() else {
+                return false;
+            };
+            let args = &words[1..];
+            if program.contains('/') && is_download(program) {
+                return true;
+            }
+            if RUNNER.is_match(last_part(program)) {
+                return args
+                    .iter()
+                    .find(|word| !word.starts_with('-'))
+                    .is_some_and(|word| is_download(word));
+            }
+            if program == "chmod" {
+                let Some(mode) = args.iter().find(|word| !word.starts_with('-')) else {
+                    return false;
+                };
+                let octal = !mode.is_empty() && mode.bytes().all(|b| (b'0'..=b'7').contains(&b));
+                let gives_x = if octal {
+                    executable(mode)
+                } else {
+                    mode.split(',').any(|clause| {
+                        clause
+                            .find(['+', '='])
+                            .is_some_and(|op| clause[op..].contains('x'))
+                    })
+                };
+                return gives_x && args.iter().skip(1).any(|word| is_download(word));
+            }
+            false
+        })
 }
 
 /// Whether a line writes into a home directory: lasting access, not a file
@@ -1288,19 +1453,27 @@ pub(crate) fn opaque(snapshot: &Snapshot, baseline: Option<&Snapshot>) -> Vec<Fi
                 vec![],
             )
         } else {
-            match content_used(snapshot, name, file.mode, &placed) {
-                None => (
+            match content_used(snapshot, file, &placed) {
+                Use::Copied => (
                     Severity::Info,
                     format!(
-                        "{} starts as a {} ({} bytes). Its content was not inspected; no script does more with it than copy it into place or list it, and its hash is part of the snapshot.",
+                        "{} starts as a {} ({} bytes). Its content was not inspected; the recipe only copies it into place under a name of the same kind, and its hash is part of the snapshot.",
                         file.path, file.format, file.size
                     ),
                     vec![],
                 ),
-                Some(evidence) => (
+                Use::Unnamed => (
                     Severity::Review,
                     format!(
-                        "{} starts as a {} ({} bytes). Its content was not inspected, and a script does more with it than copy it into place; its hash is part of the snapshot.",
+                        "{} starts as a {} ({} bytes). Its content was not inspected, and no script copies it by name, so what the recipe does with it is not known; its hash is part of the snapshot.",
+                        file.path, file.format, file.size
+                    ),
+                    vec![],
+                ),
+                Use::Used(evidence) => (
+                    Severity::Review,
+                    format!(
+                        "{} starts as a {} ({} bytes). Its content was not inspected, and the checkout does more with it than copy it into place; its hash is part of the snapshot.",
                         file.path, file.format, file.size
                     ),
                     vec![evidence],
@@ -1361,20 +1534,58 @@ pub(crate) fn opaque(snapshot: &Snapshot, baseline: Option<&Snapshot>) -> Vec<Fi
     findings
 }
 
-/// The first line of a script that does more with the file called `name`
-/// than copy it into place, if there is one. A plain copy is `install`,
-/// `cp`, `ln` or `mv` that gives it no executable mode and does not put it
-/// where `placed` (what `OPAQUE-RUN` looks for) matches. An item of one of
-/// makepkg's file arrays (`source`, `noextract`, a checksum array), on a
-/// line that is nothing but items, only lists it. Anything else that names
-/// it (`cat`, `tail`, `bsdtar`, `base64`, a variable or another array, a
-/// loop, a redirection) uses its content. A file no script names is not
-/// used by them either.
-fn content_used(snapshot: &Snapshot, name: &str, mode: u32, placed: &Regex) -> Option<Evidence> {
+/// What the checkout does with a file that is not text.
+enum Use {
+    /// Every script line that names it copies it into place under a name of
+    /// the same kind, or lists it in a file array, and at least one copies it.
+    Copied,
+    /// No script copies it by name: a glob or a name built from variables
+    /// may reach it, and nothing says how.
+    Unnamed,
+    /// The first line that does anything else with it.
+    Used(Evidence),
+}
+
+/// What the checkout does with `file`. A line of a script that names it is a
+/// plain copy (see `plain_copy`) or an item of one of makepkg's file arrays
+/// (`source`, `noextract`, a checksum array) on a line that is nothing but
+/// items; anything else (`cat`, `tail`, `bsdtar`, `base64`, a variable or
+/// another array, a loop, a redirection, a copy under another kind of name)
+/// uses its content. So does a mention in any other text file except
+/// `.SRCINFO`: a unit, a `.desktop` file, a hook or a configuration file
+/// can hand it to a program.
+fn content_used(snapshot: &Snapshot, file: &crate::model::PackageFile, placed: &Regex) -> Use {
     static FILE_ARRAY: LazyLock<Regex> = LazyLock::new(|| {
         Regex::new(r"^(?:source|noextract|(?:md5|sha1|sha224|sha256|sha384|sha512|b2|ck)sums)(?:_[A-Za-z0-9_]+)?$")
             .expect("built-in pattern must compile")
     });
+    let name = file.path.rsplit('/').next().unwrap_or(&file.path);
+    let named = Regex::new(&format!(
+        r"(?:^|[^A-Za-z0-9_.-]){}(?:$|[^A-Za-z0-9_.-])",
+        regex::escape(name)
+    ))
+    .expect("escaped name");
+    let mut copied = false;
+    for other in snapshot.files.iter().filter(|other| !other.opaque) {
+        if is_script(other) {
+            continue;
+        }
+        if other.path == ".SRCINFO" {
+            continue;
+        }
+        if let Some((index, line)) = other
+            .text
+            .lines()
+            .enumerate()
+            .find(|(_, line)| named.is_match(line))
+        {
+            return Use::Used(Evidence {
+                path: other.path.clone(),
+                line: index + 1,
+                quote: line.trim().chars().take(512).collect(),
+            });
+        }
+    }
     for script in snapshot
         .files
         .iter()
@@ -1407,38 +1618,68 @@ fn content_used(snapshot: &Snapshot, name: &str, mode: u32, placed: &Regex) -> O
                     }
                 }
             }
-            if kinds.comments.get(first).copied().unwrap_or(false) || !text.contains(name) {
+            if kinds.comments.get(first).copied().unwrap_or(false) || !named.is_match(&text) {
                 continue;
             }
             let listed = (first..index).all(|k| {
                 names.contains(&(k + 1)) && file_lines.contains(&(k + 1)) && k < kinds.trusted
             });
-            if listed || plain_copy(&text, name, mode, placed) {
+            if listed {
                 continue;
             }
-            return Some(Evidence {
+            if plain_copy(&text, file, placed) {
+                copied = true;
+                continue;
+            }
+            return Use::Used(Evidence {
                 path: script.path.clone(),
                 line: first + 1,
                 quote: physical[first].trim().chars().take(512).collect(),
             });
         }
     }
-    None
+    if copied { Use::Copied } else { Use::Unnamed }
 }
 
-/// Whether every command on `line` that names `name` is a plain copy of it:
-/// see `content_used`. `mode` is the file's own, which `cp`, `mv` and `ln`
-/// keep.
-fn plain_copy(line: &str, name: &str, mode: u32, placed: &Regex) -> bool {
+/// The file name extensions of a format `binary_format` recognises.
+fn extensions(format: &str) -> &'static [&'static str] {
+    match format {
+        "PNG image" => &["png"],
+        "JPEG image" => &["jpg", "jpeg"],
+        "GIF image" => &["gif"],
+        "WebP image" => &["webp"],
+        "ICO icon" => &["ico"],
+        "PDF document" => &["pdf"],
+        "OpenPGP key" => &["gpg", "pgp", "asc", "key"],
+        _ => &[],
+    }
+}
+
+/// Whether every command on `line` that names `file` is a plain copy of it:
+/// `install`, `cp`, `ln` or `mv` with the file among what is copied, no
+/// executable mode (`install` without `-m` gives one, and `cp`, `mv` and
+/// `ln` keep the file's own), not where `placed` (what `OPAQUE-RUN` looks
+/// for) matches, and a destination that cannot give it another kind: a
+/// directory (`-t dir`, a trailing `/`), the file's own name, or a name
+/// with an extension of the format it was recognised as. `cp icon.png x.tar`
+/// makes an archive of it; `cp icon.png helper` makes a program.
+fn plain_copy(line: &str, file: &crate::model::PackageFile, placed: &Regex) -> bool {
+    let name = file.path.rsplit('/').next().unwrap_or(&file.path);
     if line.contains("$(") || line.contains(['`', '<', '>']) || placed.is_match(line) {
         return false;
     }
+    let base = |word: &str| -> String {
+        word.trim_end_matches('/')
+            .rsplit('/')
+            .next()
+            .unwrap_or(word)
+            .to_string()
+    };
     line.split([';', '|', '&'])
         .filter(|command| command.contains(name))
         .all(|command| {
-            let words: Vec<String> = command
-                .split_whitespace()
-                .map(|word| word.replace(['"', '\''], ""))
+            let words: Vec<String> = shell_words(command)
+                .into_iter()
                 .skip_while(|word| {
                     matches!(
                         word.as_str(),
@@ -1449,13 +1690,108 @@ fn plain_copy(line: &str, name: &str, mode: u32, placed: &Regex) -> bool {
             let Some(program) = words.first() else {
                 return false;
             };
-            match program.rsplit('/').next().unwrap_or(program) {
-                // `install` without a mode makes the file executable.
-                "install" => install_mode(&words[1..]).is_some_and(|mode| !executable(&mode)),
-                "cp" | "mv" | "ln" => mode & 0o111 == 0,
-                _ => false,
+            let program = base(program);
+            // The options that take an argument, short and long.
+            let (short, long): (&str, &[&str]) = match program.as_str() {
+                "install" => (
+                    "mogtS",
+                    &["mode", "owner", "group", "target-directory", "suffix"],
+                ),
+                "cp" | "mv" | "ln" => ("tS", &["target-directory", "suffix"]),
+                _ => return false,
+            };
+            let mut target = false;
+            let mut operands: Vec<&String> = Vec::new();
+            let mut k = 1;
+            while k < words.len() {
+                let word = &words[k];
+                k += 1;
+                if let Some(option) = word.strip_prefix("--") {
+                    let (option, value) = match option.split_once('=') {
+                        Some((option, _)) => (option, true),
+                        None => (option, false),
+                    };
+                    if option == "directory" {
+                        return false;
+                    }
+                    if long.contains(&option) && !value {
+                        k += 1;
+                    }
+                    target |= option == "target-directory";
+                } else if let Some(flags) = word.strip_prefix('-').filter(|f| !f.is_empty()) {
+                    // `install -d` makes directories, `-T` treats the destination as a file.
+                    if program == "install" && flags.contains('d') {
+                        return false;
+                    }
+                    if let Some(at) = flags.find(|c: char| short.contains(c)) {
+                        target |= flags[at..].starts_with('t');
+                        if at + 1 == flags.len() {
+                            k += 1;
+                        }
+                    }
+                } else {
+                    operands.push(word);
+                }
             }
+            let (sources, destination) = if target {
+                (&operands[..], None)
+            } else {
+                match operands.split_last() {
+                    Some((last, rest)) if !rest.is_empty() => (rest, Some(*last)),
+                    _ => return false,
+                }
+            };
+            if !sources.iter().any(|source| base(source) == name) {
+                return false;
+            }
+            let kind_kept = destination.is_none_or(|destination| {
+                let last = base(destination);
+                destination.ends_with('/')
+                    || last == name
+                    || last.rsplit_once('.').is_some_and(|(_, ext)| {
+                        extensions(file.format).contains(&ext.to_ascii_lowercase().as_str())
+                    })
+            });
+            let not_executable = if program == "install" {
+                install_mode(&words[1..]).is_some_and(|mode| !executable(&mode))
+            } else {
+                file.mode & 0o111 == 0
+            };
+            kind_kept && not_executable
         })
+}
+
+/// The words of a command, with plain quoting removed: `'a b'` is one
+/// word. Nothing is expanded.
+fn shell_words(command: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    let mut word = String::new();
+    let mut in_word = false;
+    let mut quote: Option<char> = None;
+    for c in command.chars() {
+        match (quote, c) {
+            (Some(q), c) if c == q => quote = None,
+            (Some(_), c) => word.push(c),
+            (None, '\'' | '"') => {
+                quote = Some(c);
+                in_word = true;
+            }
+            (None, c) if c.is_whitespace() => {
+                if in_word {
+                    words.push(std::mem::take(&mut word));
+                    in_word = false;
+                }
+            }
+            (None, c) => {
+                word.push(c);
+                in_word = true;
+            }
+        }
+    }
+    if in_word {
+        words.push(word);
+    }
+    words
 }
 
 /// The mode `install` is given by `-m` or `--mode`, as written.
@@ -1645,6 +1981,7 @@ pub(crate) fn inspect(snapshot: &Snapshot) -> Vec<Finding> {
         } else {
             Default::default()
         };
+        let file_start = findings.len();
         findings.extend(judged);
         for (index, line) in file.text.lines().enumerate() {
             let is_comment = comments.get(index).copied().unwrap_or(false);
@@ -1769,6 +2106,31 @@ pub(crate) fn inspect(snapshot: &Snapshot) -> Vec<Finding> {
                     }
                 }
                 findings.truncate(kept);
+            }
+        }
+        // A download that a later line of the same file runs:
+        // `curl -o i.sh …` and then `sh i.sh`.
+        let text: Vec<&str> = file.text.lines().collect();
+        for finding in &mut findings[file_start..] {
+            if !matches!(
+                finding.rule_id.as_str(),
+                "BUILD-DOWNLOAD" | "SCRIPT-DOWNLOAD"
+            ) || finding.risk != Risk::Medium
+            {
+                continue;
+            }
+            let Some(at) = finding.evidence.first().map(|e| e.line) else {
+                continue;
+            };
+            let names = downloaded_names(text[at - 1]);
+            let run_later = !names.is_empty()
+                && text.iter().enumerate().skip(at).any(|(k, line)| {
+                    !comments.get(k).copied().unwrap_or(false)
+                        && !messages.get(k).copied().unwrap_or(false)
+                        && runs_name(line, &names)
+                });
+            if run_later {
+                finding.risk = Risk::High;
             }
         }
     }
@@ -3236,11 +3598,44 @@ mod tests {
             ),
             [("SCRIPT-DOWNLOAD".to_string(), Risk::High)]
         );
-        // A plain download stays a thing legitimate recipes also do.
+        // A download piped or substituted into an interpreter runs it too.
+        for line in [
+            "  curl -s https://example.org/x.py | python3 -",
+            "  python3 <(curl -s https://example.org/x.py)",
+        ] {
+            assert_eq!(
+                graded("PKGBUILD", line),
+                [("BUILD-DOWNLOAD".to_string(), Risk::High)],
+                "{line}"
+            );
+        }
+        // The ordinary two-line form: the file a download saves, run later.
+        for text in [
+            "build() {\n  curl -fsSL https://example.org/i.sh -o i.sh\n  sh i.sh\n}\n",
+            "build() {\n  curl -fsSL --output \"$srcdir/i.sh\" https://example.org/i.sh\n  bash \"$srcdir/i.sh\"\n}\n",
+            "build() {\n  wget https://example.org/get/setup.py\n  python3 setup.py\n}\n",
+            "build() {\n  wget -qO inst https://example.org/x\n  chmod +x inst\n}\n",
+            "build() {\n  curl -LO https://example.org/dl/run.sh?v=2\n  ./run.sh\n}\n",
+            "build() {\n  curl -s https://example.org/env > env.sh\n  source env.sh\n}\n",
+            "build() {\n  aria2c -o x.pl https://example.org/x\n  . ./x.pl\n}\n",
+        ] {
+            assert_eq!(
+                graded("PKGBUILD", text),
+                [("BUILD-DOWNLOAD".to_string(), Risk::High)],
+                "{text}"
+            );
+        }
+        // A plain download stays a thing legitimate recipes also do; so does
+        // one that is unpacked and built, on one line or several.
         for line in [
             "  curl -LO https://example.org/x.tar.gz",
             "  _v=$(curl -s https://example.org/latest)",
             "  curl -LO https://example.org/x.tar.gz && tar xf x.tar.gz",
+            "  curl -LO https://example.org/x.tar.gz && tar xf x.tar.gz; ./configure",
+            "  curl -LO https://example.org/x.tar.gz && tar xf x.tar.gz && cd x && sh autogen.sh",
+            "  wget https://example.org/x.tar.gz && bsdtar -xf x.tar.gz && make",
+            "  curl -LO https://example.org/i.sh\n  # sh i.sh\n  echo \"then run: sh i.sh\"",
+            "  curl -LO https://example.org/x.tar.gz\n  tar xf x.tar.gz\n  ./configure\n  chmod 644 x.tar.gz",
         ] {
             assert_eq!(
                 graded("PKGBUILD", line),
@@ -3360,19 +3755,28 @@ mod tests {
         };
         let note = [("OPAQUE-FILE".to_string(), Severity::Info)];
         let decision = [("OPAQUE-FILE".to_string(), Severity::Review)];
-        // Copied into place, listed in an array, or not named at all.
+        // Copied into place under a name of the same kind, and perhaps listed in an array.
         for recipe in [
-            "pkgname=demo\n",
             "package() { install -Dm644 assets/icon.png \"$pkgdir/usr/share/pixmaps/app.png\"; }\n",
             "package() {\n  install -Dvm644 ${srcdir}/icon.png \\\n    \"$pkgdir/usr/share/pixmaps/app.png\"\n}\n",
             "package() {\n  install -vDm644 \"$srcdir/icon.png\" -t \"$pkgdir/usr/share/icons\"\n}\n",
             "package() {\n  install -D -m 0644 icon.png \"$pkgdir/usr/share/app/icon.png\"\n}\n",
+            "package() {\n  install -Dm644 icon.png \"$pkgdir/usr/share/app/Icon.PNG\"\n}\n",
             "package() {\n  cp assets/icon.png \"$pkgdir/usr/share/app/\"\n  ln -s /usr/share/app/icon.png \"$pkgdir/usr/share/pixmaps/\"\n}\n",
-            "source=(\"https://example.org/x.tar.gz\"\n        icon.png)\nsha256sums=('0' '1')\n",
-            "# cat icon.png\n",
-            "_u=x/${pkgname//-bin/\"\"}\nsource=(\n  icon.png\n)\n",
+            "source=(\"https://example.org/x.tar.gz\"\n        icon.png)\nsha256sums=('0' '1')\npackage() { cp icon.png \"$pkgdir/usr/share/app/\"; }\n",
+            "# cat icon.png\npackage() { cp icon.png \"$pkgdir/usr/share/app/\"; }\n",
+            "_u=x/${pkgname//-bin/\"\"}\nsource=(\n  icon.png\n)\npackage() { cp icon.png \"$pkgdir/usr/share/app/\"; }\n",
         ] {
             assert_eq!(sev(recipe), note, "{recipe}");
+        }
+        // Not copied by name anywhere: a glob or a name built from variables
+        // may reach it, so it still needs a decision. Listing it is not a copy.
+        for recipe in [
+            "pkgname=demo\n",
+            "package() { install -Dm644 *.png \"$pkgdir/usr/share/app/\"; }\n",
+            "source=(icon.png)\n",
+        ] {
+            assert_eq!(sev(recipe), decision, "{recipe}");
         }
         // Another array is a variable like any other.
         assert_eq!(
@@ -3380,7 +3784,12 @@ mod tests {
             decision
         );
         // An array is only known to be one while the quoting before it was followed.
-        assert_eq!(sev("y=${x/\\'/}\nsource=(\n  icon.png\n)\n"), decision);
+        assert_eq!(
+            sev(
+                "y=${x/\\'/}\nsource=(\n  icon.png\n)\npackage() { cp icon.png \"$pkgdir/usr/share/app/\"; }\n"
+            ),
+            decision
+        );
         // Anything else that names it uses its content, which nobody read.
         for line in [
             "cat icon.png",
@@ -3395,6 +3804,13 @@ mod tests {
             "install icon.png \"$pkgdir/usr/share/app/icon.png\"",
             "install -Dm$mode icon.png \"$pkgdir/usr/share/app/icon.png\"",
             "cp \"$(echo icon.png)\" \"$pkgdir/usr/share/app/\"",
+            // Copied under a name of another kind: an archive, a program, a script.
+            "cp icon.png x.tar",
+            "cp icon.png helper",
+            "ln -sf icon.png env",
+            "mv icon.png \"$srcdir/run\"",
+            "install -Dm644 icon.png \"$pkgdir/usr/share/app/data.bin\"",
+            "cp other.png icon.png",
         ] {
             let found = opaque(
                 &with_blob(&format!("build() {{\n  {line}\n}}\n"), "aaaa"),
@@ -3414,6 +3830,32 @@ mod tests {
         );
         current.files[1].mode = 0o755;
         assert_eq!(opaque(&current, None)[0].severity, Severity::Review);
+        // Named in another text file of the checkout: a unit, a launcher, a
+        // hook can hand it to a program. `.SRCINFO` only repeats the recipe.
+        let copied = "package() { install -Dm644 icon.png \"$pkgdir/usr/share/x/icon.png\"; }\n";
+        for (path, text) in [
+            (
+                "x.service",
+                "[Service]\nExecStart=/usr/bin/python3 /usr/share/x/icon.png\n",
+            ),
+            (
+                "x.desktop",
+                "[Desktop Entry]\nExec=sh /usr/share/x/icon.png\n",
+            ),
+            ("x.hook", "[Action]\nExec = /usr/share/x/icon.png\n"),
+        ] {
+            let mut current = with_blob(copied, "aaaa");
+            current.files.push(file(path, text));
+            let found = opaque(&current, None);
+            assert_eq!(found[0].severity, Severity::Review, "{path}");
+            assert_eq!(found[0].evidence[0].path, path);
+        }
+        let mut current = with_blob(copied, "aaaa");
+        current
+            .files
+            .push(file(".SRCINFO", "\tsource = icon.png\n"));
+        current.files.push(file("x.desktop", "Icon=myicon.png\n"));
+        assert_eq!(opaque(&current, None)[0].severity, Severity::Info);
         // A note is low; a decision about a file nobody read is medium.
         let graded = |recipe: &str| -> Vec<(String, Risk)> {
             opaque(&with_blob(recipe, "aaaa"), None)
@@ -3421,14 +3863,43 @@ mod tests {
                 .map(|f| (f.rule_id.clone(), risk(f)))
                 .collect()
         };
-        assert_eq!(
-            graded("pkgname=demo\n"),
-            [("OPAQUE-FILE".to_string(), Risk::Low)]
-        );
+        assert_eq!(graded(copied), [("OPAQUE-FILE".to_string(), Risk::Low)]);
         assert_eq!(
             graded("build() { cat icon.png; }\n"),
             [("OPAQUE-FILE".to_string(), Risk::Medium)]
         );
+    }
+
+    #[test]
+    fn real_recipes_that_only_install_an_icon_or_a_licence_are_notes() {
+        let with = |path: &str, format: &'static str, recipe: &str| -> Severity {
+            let mut current = snapshot(recipe);
+            current.files.push(PackageFile {
+                path: path.into(),
+                mode: 0o644,
+                sha256: "aaaa".into(),
+                opaque: true,
+                size: 2048,
+                format,
+                ..Default::default()
+            });
+            opaque(&current, None)[0].severity
+        };
+        // notion-app-electron: copied to a name of the same kind elsewhere.
+        let notion = "source=(\n\tnotion.png\n)\npackage() {\n\tinstall -vDm644 \"$srcdir/notion.png\" \"$srcdir/asar_patched/.webpack/main/trayIcon.png\"\n\tinstall -vDm644 \"$srcdir/notion.png\" -t \"$share/icons/hicolor/256x256/apps\"\n}\n";
+        assert_eq!(with("notion.png", "PNG image", notion), Severity::Info);
+        // librewolf-bin: a command joined over lines, after `${…""}`.
+        let librewolf = "_u=x/${pkgname//-bin/\"\"}/y\nsource=(\n  default192x192.png\n)\npackage() {\n  install -Dvm644 ${srcdir}/default192x192.png \\\n    \"$pkgdir/usr/share/icons/hicolor/192x192/apps/librewolf.png\"\n}\n";
+        assert_eq!(
+            with("default192x192.png", "PNG image", librewolf),
+            Severity::Info
+        );
+        // microsoft-edge-stable-bin: a licence PDF with spaces in its name.
+        let pdf = "Microsoft Standard Application License Terms - Standalone (free) Use Terms.pdf";
+        let edge = format!(
+            "source=(\"x.deb\"\n\t\"{pdf}\")\npackage() {{\n\tinstall -Dm644 '{pdf}' \"${{pkgdir}}/usr/share/licenses/${{_pkgname}}/LICENSE.pdf\"\n}}\n"
+        );
+        assert_eq!(with(pdf, "PDF document", &edge), Severity::Info);
     }
 
     #[test]

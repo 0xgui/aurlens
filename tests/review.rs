@@ -770,3 +770,47 @@ fn the_report_grades_the_review_and_every_finding() {
     let read: aurlens::ReviewReport = serde_json::from_value(old).unwrap();
     assert_eq!(read.risk, Risk::Unknown);
 }
+
+#[test]
+fn a_file_nobody_read_that_is_renamed_or_named_elsewhere_still_needs_a_person() {
+    let png: &[u8] = &[
+        0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, 255, 254,
+    ];
+    let probes: [(&str, Option<(&str, &str)>); 4] = [
+        (
+            "pkgname=example\nprepare() { cp logo.png x.tar; }\nbuild() { bsdtar -xf x.tar; }\n",
+            None,
+        ),
+        (
+            "pkgname=example\nprepare() { cp logo.png helper; }\nbuild() { python3 helper; }\n",
+            None,
+        ),
+        (
+            "pkgname=example\nprepare() { ln -sf logo.png env; }\nbuild() { . ./env; }\n",
+            None,
+        ),
+        (
+            "pkgname=example\npackage() { install -Dm644 logo.png \"$pkgdir/usr/share/x/logo.png\"; }\n",
+            Some((
+                "x.service",
+                "[Service]\nExecStart=/usr/bin/python3 /usr/share/x/logo.png\n",
+            )),
+        ),
+    ];
+    for (recipe, extra) in probes {
+        let root = package(recipe);
+        fs::write(root.path().join("logo.png"), png).unwrap();
+        if let Some((path, text)) = extra {
+            fs::write(root.path().join(path), text).unwrap();
+        }
+        let report = review(root.path(), &ReviewOptions::default());
+        assert_eq!(report.decision, Decision::ManualReview, "{recipe}");
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|f| f.rule_id == "OPAQUE-FILE" && f.severity == Severity::Review),
+            "{recipe}"
+        );
+    }
+}
