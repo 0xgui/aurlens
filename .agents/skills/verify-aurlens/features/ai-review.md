@@ -5,7 +5,7 @@ Users opt into source disclosure through a trusted configuration and receive AI 
 ## Sub-features
 
 - `ai-block-preserved` completes a configured model request without clearing deterministic findings.
-- `ai-invalid-evidence` reports incomplete review when the model cites a missing file.
+- `ai-unverified-evidence` keeps a finding whose citation names a missing file as `AI-UNVERIFIED-001` at `review`, with AI complete, and keeps the deterministic block.
 - `config-location` rejects AI configuration inside the checkout, covered by the broader Rust suite.
 
 ## How to get to it (user POV)
@@ -19,7 +19,7 @@ Preconditions: local socket binding is allowed. The fixture endpoint is owned by
 - Run the helper. It writes temporary trusted TOML outside the package checkout and invokes the actual CLI with `--config`.
 - Inspect `ai-valid.request.json` for source text and snapshot identity actually sent through the production HTTP client.
 - Require `ai-block-preserved.stdout.json` to have `ai.state = complete`, a retained deterministic `REMOTE-SHELL` finding, and exit 2.
-- Require `ai-invalid-evidence.stdout.json` to have `ai.state = incomplete`, reason `ai_evidence`, and exit 3.
+- Require `ai-unverified-evidence.stdout.json` to have `ai.state = complete`, a retained deterministic `REMOTE-SHELL` finding, an `AI-UNVERIFIED-001` finding with severity `review` and empty evidence, and exit 2.
 - For configuration changes, also run `cargo test --locked --test review cli_rejects_configuration_from_checkout_and_emits_json` and retain its output.
 
 ## Gotchas

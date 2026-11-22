@@ -46,7 +46,7 @@ Subsequent scans use the saved connection automatically. Run setup again to chan
 
 Codex reviews run through a restricted CLI profile with shell execution disabled. API and local model servers must support JSON output. Unsupported CLI versions, incompatible responses, and unavailable models make the review incomplete. For manual configuration and backend limits, see [the AI protocol](docs/ai-protocol.md).
 
-The model receives the current package text, relative file names, hashes, and a baseline change summary when requested. Baseline file bodies are not sent. Model responses are untrusted. Each AI finding must cite a real file, line, and matching excerpt. AI can add findings but cannot clear deterministic findings. See [the AI protocol](docs/ai-protocol.md).
+The model receives the current package text, relative file names, hashes, and a baseline change summary when requested. Baseline file bodies are not sent. Model responses are untrusted. Each AI finding must cite a real file, line, and matching excerpt. A finding whose citation does not match is reported as `AI-UNVERIFIED-…`, without the citations that failed, and at most asks for a manual review. AI can add findings but cannot clear deterministic findings. See [the AI protocol](docs/ai-protocol.md).
 
 ## Check a reviewed snapshot
 

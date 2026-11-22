@@ -168,3 +168,5 @@ A checksum set by position (`sha256sums[4]='SKIP'`) is judged by the source at t
 A model can add findings at any of the three severities and cannot change or remove a finding from a rule. Its instructions reserve `review` for a concrete security risk and `block` for behaviour with no honest use; packaging style and facts true of every source build are `info` or left out. See [the AI protocol](ai-protocol.md).
 
 Because a model's `info` finding does not change the decision, a recipe written to talk the model down can at worst silence the model. The rules are unaffected, which is the reason the high-risk behaviours above are rules.
+
+Every model finding cites lines of the recipe. When a citation does not match the line it names, the finding is kept as `AI-UNVERIFIED-` and its number, with only the citations that match, and its message says the citation could not be verified. Such a finding is never `block`: a model's `block` becomes `review` (`manual_review`, `medium`), and `review` and `info` stay as they are. One wrong citation no longer makes the whole AI review incomplete. See [the AI protocol](ai-protocol.md#http-request-and-shared-opinion-schema).

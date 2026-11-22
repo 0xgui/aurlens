@@ -1,4 +1,4 @@
-use aurlens::{AiConfig, AiResult, Decision, HttpConfig, ReviewOptions, Severity, review};
+use aurlens::{AiConfig, AiResult, Decision, HttpConfig, ReviewOptions, Risk, Severity, review};
 use serde_json::{Value, json};
 use std::fs;
 use std::io::{Read, Write};
@@ -147,20 +147,39 @@ fn user_journey_evidence() {
             .any(|finding| finding["rule_id"] == "REMOTE-SHELL")
     );
 
+    // A citation that matches nothing is kept as an unverified finding. It
+    // cannot lower what a rule found: the recipe is still blocked.
     let (config, handle) = model_server(|data| {
         json!({
             "snapshot_digest":data["snapshot_digest"],"summary":"Unbound observation.",
-            "findings":[{"severity":"review","message":"Invalid evidence.","evidence":[{"path":"missing.sh","line":1,"quote":"invented"}]}]
+            "findings":[{"severity":"block","message":"Invalid evidence.","evidence":[{"path":"missing.sh","line":1,"quote":"invented"}]}]
         })
     });
     write_config(&config);
     let report = drive(
-        "ai-invalid-evidence",
+        "ai-unverified-evidence",
         &["--config", config_path.to_str().unwrap()],
-        3,
+        2,
     );
     handle.join().unwrap();
-    assert_eq!(report["ai"]["state"], "incomplete");
+    assert_eq!(report["ai"]["state"], "complete");
+    assert_eq!(report["decision"], "blocked");
+    assert_eq!(report["risk"], "critical");
+    assert!(
+        report["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|finding| finding["rule_id"] == "REMOTE-SHELL" && finding["severity"] == "block")
+    );
+    let unverified = report["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|finding| finding["rule_id"] == "AI-UNVERIFIED-001")
+        .unwrap();
+    assert_eq!(unverified["severity"], "review");
+    assert_eq!(unverified["evidence"], json!([]));
 
     let changed = root.join("PKGBUILD");
     let (config, handle) = model_server(move |data| {
@@ -185,7 +204,7 @@ fn user_journey_evidence() {
     drop(scratch);
     assert!(!scratch_path.exists());
     fs::write(evidence.join("summary.json"),serde_json::to_vec_pretty(&json!({
-        "passed":true,"journeys":["static-text","static-clean","static-block","update-diff","ai-block-preserved","ai-invalid-evidence","changed-during-ai","external-symlink"],
+        "passed":true,"journeys":["static-text","static-clean","static-block","update-diff","ai-block-preserved","ai-unverified-evidence","changed-during-ai","external-symlink"],
         "scratch_removed":true,"recipe_executed":false,"real_model_contacted":false
     })).unwrap()).unwrap();
     println!("Verification evidence: {}", evidence.display());
@@ -400,6 +419,92 @@ fn grounded_ai_finding_requires_manual_review() {
     handle.join().unwrap();
     assert_eq!(report.decision, Decision::ManualReview);
     assert_eq!(report.findings[0].source, "ai");
+}
+
+#[test]
+fn a_misquoted_ai_finding_asks_a_person_instead_of_making_the_review_incomplete() {
+    // A clean recipe, and a model that cites the right line in other words.
+    let source =
+        "pkgname=example\npackage() { install -Dm755 example \"$pkgdir/usr/bin/example\"; }\n";
+    let root = package(source);
+    let answer = |data: Value| {
+        json!({
+            "snapshot_digest":data["snapshot_digest"],"summary":"Installs one program.",
+            "findings":[{"severity":"block","message":"The program is installed with a setuid bit.","evidence":[
+                {"path":"PKGBUILD","line":2,"quote":"install -Dm4755 example"}
+            ]}]
+        })
+    };
+    let (ai, handle) = model_server(answer);
+    let report = review(
+        root.path(),
+        &ReviewOptions {
+            ai: Some(ai),
+            ..Default::default()
+        },
+    );
+    handle.join().unwrap();
+    assert!(matches!(report.ai, AiResult::Complete { .. }));
+    assert_eq!(report.decision, Decision::ManualReview);
+    assert_eq!(report.exit_code, 1);
+    assert_eq!(report.risk, Risk::Medium);
+    assert_eq!(report.findings.len(), 1);
+    let finding = &report.findings[0];
+    assert_eq!(finding.rule_id, "AI-UNVERIFIED-001");
+    assert_eq!(finding.source, "ai");
+    assert_eq!(finding.severity, Severity::Review);
+    assert_eq!(finding.risk, Risk::Medium);
+    assert!(finding.evidence.is_empty());
+    assert_eq!(
+        finding.message,
+        "The citation the model gave for this could not be verified against the recipe. The program is installed with a setuid bit."
+    );
+
+    // The same answer through the command line, as JSON and as text.
+    let config_dir = tempdir().unwrap();
+    let config_path = config_dir.path().join("ai.toml");
+    let write_config = |config: &AiConfig| {
+        let AiConfig::Http(config) = config else {
+            panic!("expected HTTP")
+        };
+        fs::write(&config_path, format!(
+            "[ai]\nendpoint={:?}\nmodel='fixture-model'\nsend_source=true\nallow_loopback_http=true\ntimeout_seconds=5\n",
+            config.endpoint
+        )).unwrap();
+    };
+    let (ai, handle) = model_server(answer);
+    write_config(&ai);
+    let output = cli(root.path(), &["--config", config_path.to_str().unwrap()]);
+    handle.join().unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let json: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["decision"], "manual_review");
+    assert_eq!(json["ai"]["state"], "complete");
+    assert_eq!(json["findings"][0]["rule_id"], "AI-UNVERIFIED-001");
+    assert_eq!(json["findings"][0]["source"], "ai");
+    assert_eq!(json["findings"][0]["evidence"], json!([]));
+    assert_eq!(json["ai"]["findings"][0], json["findings"][0]);
+
+    let (ai, handle) = model_server(answer);
+    write_config(&ai);
+    let user_config = tempdir().unwrap();
+    let output = Command::new(
+        std::env::var_os("AURLENS_VERIFY_BIN")
+            .unwrap_or_else(|| env!("CARGO_BIN_EXE_aurlens").into()),
+    )
+    .env("XDG_CONFIG_HOME", user_config.path())
+    .arg("scan")
+    .arg(root.path())
+    .args(["--config", config_path.to_str().unwrap()])
+    .output()
+    .unwrap();
+    handle.join().unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(text.contains("AI: complete (fixture-model)"));
+    assert!(text.contains(
+        "[Review] AI-UNVERIFIED-001: The citation the model gave for this could not be verified against the recipe. The program is installed with a setuid bit."
+    ));
 }
 
 #[test]

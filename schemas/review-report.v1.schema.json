@@ -129,7 +129,10 @@
       "type": "object",
       "required": ["rule_id", "source", "severity", "message", "evidence"],
       "properties": {
-        "rule_id": { "type": "string" },
+        "rule_id": {
+          "description": "The rule that produced the finding. A model's finding is `AI-` and its position in the model's answer (`AI-001`), or `AI-UNVERIFIED-` and its position (`AI-UNVERIFIED-002`) when a citation it gave did not match the snapshot: those citations are left out, its message says so, and its severity is never `block`.",
+          "type": "string"
+        },
         "source": {
           "description": "Where the finding came from. Current values are `deterministic`, `engine`, and `ai`.",
           "type": "string"
@@ -141,7 +144,7 @@
         },
         "message": { "type": "string" },
         "evidence": {
-          "description": "Source locations. Engine findings have none.",
+          "description": "Source locations. Engine findings have none, and an `AI-UNVERIFIED-` finding has only the citations that matched, possibly none.",
           "type": "array",
           "items": { "$ref": "#/$defs/evidence" }
         }
