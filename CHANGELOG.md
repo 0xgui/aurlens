@@ -2,12 +2,15 @@
 
 ## Unreleased
 
+## 0.3.0 - 2026-11-22
+
+The first tagged release. It also contains the changes listed under 0.2.0, which was never tagged or published.
+
 ### Added
 
 - Every report carries a grade, `risk`, for the review and for each finding: `low`, `medium`, `high`, `critical`, or `unknown` when the review is incomplete. The text report prints it as advice: "Looks fine", "Check first", "Be careful", "Do not install", "Could not check". It is computed from the rules; a model's finding is `medium` and cannot lower it. See [rules and severities](docs/rules.md#advice).
 - Rules for high-risk behaviour. `REVERSE-SHELL` blocks. `RAW-SOCKET`, `SETUID`, `PRIVILEGE-CONFIG`, `STARTUP-FILE`, `CREDENTIAL-STORE`, `DROP-HOST`, `NUMERIC-HOST`, `PACKAGE-MANAGER`, `DISABLE-PROTECTION`, `DESTRUCTIVE`, `BUILD-DOWNLOAD`, `OUTSIDE-WRITE`, `INSTALL-DOWNLOAD`, `INSTALL-WRITE`, `PACKAGE-TRUST`, `ACCOUNT`, `SCRIPT-DOWNLOAD` and `PIPED-SHELL` need review. `INSTALL-SERVICE`, `SANDBOX-HELPER` and `PRELOAD` are informational. See [rules and severities](docs/rules.md).
 - AI findings can have severity `info`. Such a finding is listed and does not change the decision. The instructions sent to the model now say what each severity is for, so a remark about packaging style no longer asks for a manual review.
-
 - An image (PNG, JPEG, GIF, WebP, ICO), a PDF or a binary OpenPGP key no longer makes the review `incomplete`. It is recognised by how it starts; any other file that is not text is refused as before. Its hash is part of the snapshot digest and it is reported in `coverage.uninspected`, in `files` with `"opaque": true`, and by an `OPAQUE-FILE` finding: `review` when it is new or changed, `info` when the baseline has the same bytes. `OPAQUE-RUN` reports a recipe that runs such a file, and blocks one that names it in `install=`. Files that have to be text to be reviewed (the PKGBUILD, install scripts, patches, anything with a `#!` line, and others listed in [rules and severities](docs/rules.md)) are refused as before when they are not.
 
 ### Changed
@@ -29,10 +32,11 @@
 ### Fixed
 
 - A test ran `scan` without `--no-ai`, so it used the saved AI connection of whoever ran the tests.
-
 - Rules no longer skip a line just because it begins with `#`. Such a line is not a comment to the shell when it starts inside a string that spans lines, inside a here-document, after a backslash-newline, or after a character that is not a space or tab. A command on such a line ran without a finding. A line is now skipped only when it is certainly a comment. In a recipe that uses shell constructs the scanner does not model exactly, text in later comments is inspected too, so a recipe can now get a finding from a comment.
 
-## 0.2.0
+## 0.2.0 - not released
+
+This version was set in `Cargo.toml` but never tagged or published. Builds from source between these changes and 0.3.0 report it.
 
 ### Changed
 
