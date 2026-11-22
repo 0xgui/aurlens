@@ -37,22 +37,24 @@ pub enum Severity {
 
 /// How much a finding, or a whole review, should weigh with the person
 /// deciding. It is a reading of the findings, not of the package: `low`
-/// says nothing was found in the recipe, not that the software is safe.
+/// says no rule asked for a decision about the recipe. It is not an
+/// assessment of the software.
 ///
 /// The decision says what has to happen (nothing, a person's yes, a stop).
 /// The risk says how hard to look.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Risk {
-    /// Nothing found, or notes only.
+    /// No rule asked for a decision: nothing found, or notes only.
     Low,
-    /// Something a person has to decide about, of a kind that legitimate
-    /// recipes also do: an unverified download, an unencrypted source, a
-    /// file nobody read.
+    /// A finding a person has to decide about, of a kind that legitimate
+    /// recipes also have: an unverified download, an unencrypted source, a
+    /// file nobody read whose content a script uses.
     Medium,
-    /// The package takes root-level or lasting power, or reaches for
-    /// credentials: a setuid file, a write to the system as root, sudoers,
-    /// accounts, pacman's trust, a startup file.
+    /// A finding of the graver kind: it would give the package root-level
+    /// or lasting power (a setuid file, a write to the system as root,
+    /// sudoers, accounts, pacman's trust, a startup file or SSH keys), reach
+    /// for credentials, or hide what runs (a download that is then run).
     High,
     /// Behaviour with no honest use in a recipe. The review is blocked.
     Critical,
@@ -87,15 +89,17 @@ impl Risk {
     pub fn meaning(self) -> &'static str {
         match self {
             Self::Low => {
-                "Nothing in the recipe needs a decision. That says nothing about the software it downloads."
+                "No rule asked for a decision about the recipe. That is not an assessment of the software it downloads."
             }
             Self::Medium => {
-                "The recipe does something a person should look at, of a kind legitimate recipes also do."
+                "The recipe has a finding a person should decide about, of a kind legitimate recipes also have. Read the finding before you install."
             }
             Self::High => {
-                "The package takes root-level or lasting power, reaches for credentials, or hides what it runs. Install it only if you trust where it comes from."
+                "The recipe has a finding of the graver kind: it would give the package root-level or lasting power, reach for credentials or hide what runs. Read the finding and install only if you trust where it comes from."
             }
-            Self::Critical => "The recipe does something with no honest use in a package.",
+            Self::Critical => {
+                "The recipe has a finding of behaviour with no honest use in a package."
+            }
             Self::Unknown => {
                 "The review could not be completed, so nothing can be said about the recipe."
             }
