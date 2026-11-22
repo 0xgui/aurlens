@@ -464,7 +464,31 @@ fn a_file_that_is_not_text_is_covered_reported_and_never_sent() {
     let png: &[u8] = &[
         0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, 255, 254,
     ];
-    let recipe = "pkgname=example\npackage() { install -Dm644 icon.png \"$pkgdir/usr/share/pixmaps/example.png\"; }\n";
+    // Only copied into place: a note. It is still uninspected and covered.
+    let copied = "pkgname=example\npackage() { install -Dm644 icon.png \"$pkgdir/usr/share/pixmaps/example.png\"; }\n";
+    let root = package(copied);
+    fs::write(root.path().join("icon.png"), png).unwrap();
+    let report = review(root.path(), &ReviewOptions::default());
+    assert_eq!(
+        (report.decision, report.risk),
+        (Decision::NoFindings, aurlens::Risk::Low)
+    );
+    assert_eq!(report.coverage.uninspected, ["icon.png"]);
+    assert!(
+        report
+            .files
+            .iter()
+            .any(|f| f.path == "icon.png" && f.opaque)
+    );
+    assert!(
+        report
+            .findings
+            .iter()
+            .any(|f| f.rule_id == "OPAQUE-FILE" && f.severity == Severity::Info)
+    );
+
+    // A recipe that uses its content (here, unpacks it).
+    let recipe = "pkgname=example\nprepare() { bsdtar -xf icon.png; }\n";
     let root = package(recipe);
     fs::write(root.path().join("icon.png"), png).unwrap();
 

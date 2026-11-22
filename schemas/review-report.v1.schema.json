@@ -32,7 +32,7 @@
       "enum": ["no_findings", "manual_review", "blocked", "incomplete"]
     },
     "risk": {
-      "description": "How much the findings should weigh with the person deciding: the highest risk among them, or `unknown` when the review is incomplete. `low`: nothing found, or notes only. `medium`: something legitimate recipes also do. `high`: the package takes root-level or lasting power, reaches for credentials, or hides what it runs. `critical`: blocked. A reading of the recipe, not of the software it downloads.",
+      "description": "How much the findings should weigh with the person deciding: the highest risk among them, or `unknown` when the review is incomplete. `low`: no rule asked for a decision (no findings, or notes only); it is not an assessment of the software. `medium`: a finding of a kind legitimate recipes also have. `high`: a finding of the graver kind: it would give the package root-level or lasting power, reach for credentials or hide what runs. `critical`: a blocking finding. A reading of the recipe, not of the software it downloads.",
       "enum": ["low", "medium", "high", "critical", "unknown"]
     },
     "exit_code": {
@@ -136,7 +136,7 @@
         },
         "severity": { "enum": ["info", "review", "block"] },
         "risk": {
-          "description": "`low` for a note, `critical` for a block, `medium` or `high` for a review finding by its rule. A model's review finding is `medium`.",
+          "description": "`low` for a note, `critical` for a block, `medium` or `high` for a review finding by its rule and the line it matched. A model's review finding is `medium`.",
           "enum": ["low", "medium", "high", "critical", "unknown"]
         },
         "message": { "type": "string" },

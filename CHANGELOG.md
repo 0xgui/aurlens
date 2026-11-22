@@ -25,6 +25,15 @@
 - `SETUID` finds modes written with a leading zero, with `=`, or as `--mode=`. A directory created setgid is not reported.
 - The sandbox-helper note needs every file of the command to be named as a helper and none to be in a `bin` directory.
 - `DROP-HOST` needs the host to appear as a host. `NUMERIC-HOST` ignores private networks. An `http://` source with a SHA-2 or BLAKE2 checksum is `info`.
+- An image, a PDF or a binary key that the scripts only copy into place (`install`, `cp`, `ln`, `mv` with no executable mode and not where `OPAQUE-RUN` looks), list in `source`, `noextract` or a checksum array, or do not name, is an `info` finding even when it is new or changed. A recipe that ships only an icon or a licence PDF is `no_findings` and "Looks fine" instead of "Check first". `OPAQUE-FILE` is still `review` when a script names the file in any other way (`cat`, `tail`, `dd`, `bsdtar`, `base64`, a variable), with that line as evidence. The file is still listed as uninspected, bound into the snapshot digest and reported in `changes`.
+- A finding's grade can depend on the line it matched, not only on its rule. A model's `review` finding stays `medium` whatever grade or rule name it carries.
+- `BUILD-DOWNLOAD` and `SCRIPT-DOWNLOAD` are `high` when the line also runs something: an interpreter one-liner that fetches, or a shell, an interpreter, `./file` or `source` after `;`, `&&` or `||` (`curl -o i.sh …; sh i.sh`). A plain download stays `medium`.
+- `OUTSIDE-WRITE` also reports a write into `~` or `$HOME`, and is `high` when the target is under `/home`, `/root` or `~`. `STARTUP-FILE` also covers any user's `.ssh/authorized_keys`, including `~user/`.
+- `PROMPT-INJECTION` looks only at the scripts and `.SRCINFO`, comments included. A prompt in a data file the package ships (`*.txt`, `*.md`, `*.json`, `*.yaml`, `*.toml`), such as the system prompt of an AI tool, is content and is not reported.
+- `NUMERIC-HOST` is `high`.
+- `SETUID` is `medium` for setgid without setuid on a file and for `setcap` whose only capability is `cap_net_bind_service`; setuid and other capabilities stay `high`. `setcap -r`, which removes capabilities, is not reported.
+- The sentences behind the advice describe the recipe's findings. `low` means that no rule asked for a decision; it is not an assessment of the software. The five advice labels are unchanged.
+- A `${…}` outside quotes that contains an empty pair of quotes (`${pkgname//-bin/""}`) no longer stops the scanner from trusting later comments.
 
 ### Fixed
 
