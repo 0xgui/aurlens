@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.3.1 - 2026-11-22
+
+### Changed
+
+- A model finding whose citation does not match the recipe no longer makes the AI review, and so the whole review, `incomplete` (`ai_evidence`). The finding is kept: the citations that do not match are dropped, its `rule_id` is `AI-UNVERIFIED-` and its position (`AI-UNVERIFIED-002`), `source` stays `ai`, and its message starts with "The citation the model gave for this could not be verified against the recipe." A model's `block` becomes `review` when its citation cannot be verified, and its message then also says "The model judged this to have no honest use in a recipe." A model's `review` and `info` keep their severity and get no such sentence. A clean recipe with one misquoted model finding is now `manual_review` instead of `incomplete`. Evidence of the wrong shape, exceeded limits, a wrong snapshot digest and every other AI failure still make the review `incomplete`. An evidence path longer than 4,096 bytes or a quote longer than 2,048 bytes is now reported as `ai_opinion_bounds` instead of `ai_evidence`. See [the AI protocol](docs/ai-protocol.md#http-request-and-shared-opinion-schema).
+
 ## 0.3.0 - 2026-11-22
 
 The first tagged release. It also contains the changes listed under 0.2.0, which was never tagged or published.

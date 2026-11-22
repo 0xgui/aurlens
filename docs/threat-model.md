@@ -26,7 +26,9 @@ AI review requires an explicit trusted configuration and `send_source = true`. C
 
 The HTTP client verifies TLS, refuses redirects, disables proxies and retries, and caps request size, response size, and request duration. Plain HTTP is restricted to an explicitly opted-in numeric loopback address. Credentials come from a named environment variable and are not included in reports or diagnostic bodies.
 
-The model receives source as data and has no tools. Every returned finding must identify the current snapshot and quote an existing source line. Invalid JSON, unsupported operations, ungrounded evidence, unavailable endpoints, and truncated answers make AI review incomplete. Model opinions cannot remove deterministic findings. Grounded quotations establish that text exists; they do not establish that the model interpreted it correctly.
+The model receives source as data and has no tools. Every returned answer must identify the current snapshot, and every finding must cite source lines. Invalid JSON, unsupported operations, unavailable endpoints, exceeded limits, and truncated answers make AI review incomplete. A citation that does not match the line it names is dropped, and its finding is shown as unverified (`AI-UNVERIFIED-…`) at no more than `review`, so a claim nobody can check is never displayed as checked against the source. Model opinions cannot remove or lower deterministic findings. Grounded quotations establish that text exists; they do not establish that the model interpreted it correctly.
+
+A recipe that steers the model gains nothing from this: it could already make the model return no findings, which is the best outcome a model can give, and an unverified finding at most asks a person (`manual_review`), which is never better for the recipe than no findings. What changes is that a model which notices something but misquotes it asks a person instead of making the review incomplete, and a misquoted `block` asks instead of blocking; the rules, not the model, are what block the high-risk behaviours, and they are unaffected.
 
 ## Result boundary
 
