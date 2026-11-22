@@ -64,7 +64,7 @@ Evidence is verified when it names a current text file of the snapshot, a line n
 
 - The evidence that does not match is dropped; the evidence that matches is kept. A finding with none left has an empty `evidence` list.
 - Its `rule_id` is `AI-UNVERIFIED-` followed by its position in the model's list (`AI-UNVERIFIED-002`); a verified finding is `AI-` and its position (`AI-001`). `source` is `ai` for both.
-- Its message starts with "The citation the model gave for this could not be verified against the recipe." followed by the model's message.
+- Its message starts with "The citation the model gave for this could not be verified against the recipe." When the model said `block`, the next sentence is "The model judged this to have no honest use in a recipe." The model's own message follows. A finding the model called `review` or `info` has no such sentence.
 - `block` becomes `review`, because nobody can check the claim and it must not stop an install with no way forward. `review` and `info` are unchanged, and the decision and `risk` follow as for any model finding.
 
 Nothing is shown as a citation unless it matches the snapshot. A consumer that wants to treat unverified findings differently selects them by the `AI-UNVERIFIED-` prefix.

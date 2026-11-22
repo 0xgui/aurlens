@@ -180,6 +180,10 @@ fn user_journey_evidence() {
         .unwrap();
     assert_eq!(unverified["severity"], "review");
     assert_eq!(unverified["evidence"], json!([]));
+    assert_eq!(
+        unverified["message"],
+        "The citation the model gave for this could not be verified against the recipe. The model judged this to have no honest use in a recipe. Invalid evidence."
+    );
 
     let changed = root.join("PKGBUILD");
     let (config, handle) = model_server(move |data| {
@@ -457,7 +461,7 @@ fn a_misquoted_ai_finding_asks_a_person_instead_of_making_the_review_incomplete(
     assert!(finding.evidence.is_empty());
     assert_eq!(
         finding.message,
-        "The citation the model gave for this could not be verified against the recipe. The program is installed with a setuid bit."
+        "The citation the model gave for this could not be verified against the recipe. The model judged this to have no honest use in a recipe. The program is installed with a setuid bit."
     );
 
     // The same answer through the command line, as JSON and as text.
@@ -503,7 +507,7 @@ fn a_misquoted_ai_finding_asks_a_person_instead_of_making_the_review_incomplete(
     let text = String::from_utf8(output.stdout).unwrap();
     assert!(text.contains("AI: complete (fixture-model)"));
     assert!(text.contains(
-        "[Review] AI-UNVERIFIED-001: The citation the model gave for this could not be verified against the recipe. The program is installed with a setuid bit."
+        "[Review] AI-UNVERIFIED-001: The citation the model gave for this could not be verified against the recipe. The model judged this to have no honest use in a recipe. The program is installed with a setuid bit."
     ));
 }
 

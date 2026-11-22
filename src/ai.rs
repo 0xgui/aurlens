@@ -403,6 +403,10 @@ fn parse_opinion(bytes: &[u8], snapshot: &Snapshot) -> Result<Opinion, AiError> 
 const UNVERIFIED: &str =
     "The citation the model gave for this could not be verified against the recipe. ";
 
+/// Put after [`UNVERIFIED`] when the model said `block`, which an unverified
+/// finding cannot be: the reader still learns how grave the model judged it.
+const WANTED_BLOCK: &str = "The model judged this to have no honest use in a recipe. ";
+
 /// Whether `evidence` quotes a nonempty part of an existing line of a current
 /// text file. Only such evidence is shown as the model's citation.
 fn quotes_snapshot(evidence: &ModelEvidence, snapshot: &Snapshot) -> bool {
@@ -438,6 +442,7 @@ fn findings(opinion: Vec<ModelFinding>, snapshot: &Snapshot) -> Vec<Finding> {
                 })
                 .collect();
             let verified = evidence.len() == cited;
+            let wanted_block = matches!(finding.severity, ModelSeverity::Block);
             Finding {
                 risk: Default::default(),
                 rule_id: if verified {
@@ -451,10 +456,10 @@ fn findings(opinion: Vec<ModelFinding>, snapshot: &Snapshot) -> Vec<Finding> {
                     ModelSeverity::Block if verified => Severity::Block,
                     ModelSeverity::Review | ModelSeverity::Block => Severity::Review,
                 },
-                message: if verified {
-                    finding.message
-                } else {
-                    format!("{UNVERIFIED}{}", finding.message)
+                message: match (verified, wanted_block) {
+                    (true, _) => finding.message,
+                    (false, false) => format!("{UNVERIFIED}{}", finding.message),
+                    (false, true) => format!("{UNVERIFIED}{WANTED_BLOCK}{}", finding.message),
                 },
                 evidence,
             }
@@ -1062,7 +1067,7 @@ mod tests {
             assert!(finding.evidence.is_empty(), "{case}");
             assert_eq!(
                 finding.message,
-                "The citation the model gave for this could not be verified against the recipe. Remote script execution needs review.",
+                "The citation the model gave for this could not be verified against the recipe. The model judged this to have no honest use in a recipe. Remote script execution needs review.",
                 "{case}"
             );
         }
@@ -1123,7 +1128,7 @@ mod tests {
                 (
                     "AI-UNVERIFIED-002",
                     Severity::Review,
-                    "The citation the model gave for this could not be verified against the recipe. Unverified block.",
+                    "The citation the model gave for this could not be verified against the recipe. The model judged this to have no honest use in a recipe. Unverified block.",
                     0
                 ),
                 (
@@ -1142,6 +1147,15 @@ mod tests {
             ]
         );
         assert!(findings.iter().all(|f| f.source == "ai"));
+        // Only the finding the model called `block` says so.
+        assert_eq!(
+            findings
+                .iter()
+                .filter(|f| f.message.contains(WANTED_BLOCK))
+                .map(|f| f.rule_id.as_str())
+                .collect::<Vec<_>>(),
+            ["AI-UNVERIFIED-002"]
+        );
     }
 
     #[test]
@@ -1262,7 +1276,10 @@ print(json.dumps({'type':'turn.completed'}))
                 assert_eq!(findings[0].rule_id, "AI-UNVERIFIED-001");
                 assert_eq!(findings[0].severity, Severity::Review);
                 assert!(findings[0].evidence.is_empty());
-                assert!(findings[0].message.starts_with(UNVERIFIED));
+                assert_eq!(
+                    findings[0].message,
+                    format!("{UNVERIFIED}{WANTED_BLOCK}Pipes a download into a shell.")
+                );
             }
             other => panic!("Expected a complete AI assessment, got {other:?}"),
         }
