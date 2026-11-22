@@ -25,6 +25,15 @@
 - `SETUID` finds modes written with a leading zero, with `=`, or as `--mode=`. A directory created setgid is not reported.
 - The sandbox-helper note needs every file of the command to be named as a helper and none to be in a `bin` directory.
 - `DROP-HOST` needs the host to appear as a host. `NUMERIC-HOST` ignores private networks. An `http://` source with a SHA-2 or BLAKE2 checksum is `info`.
+- An image, a PDF or a binary key that the recipe only copies into place by name is an `info` finding even when it is new or changed: `install`, `cp`, `ln` or `mv` with no executable mode, not where `OPAQUE-RUN` looks, to a directory, to its own name or to a name with an extension of its format, and perhaps listed in `source`, `noextract` or a checksum array. A recipe that ships only an icon or a licence PDF this way is `no_findings` and "Looks fine" instead of "Check first". `OPAQUE-FILE` is still `review` when a script names the file in any other way (`cat`, `tail`, `dd`, `bsdtar`, `base64`, a variable, a copy to `x.tar` or `helper`), with that line as evidence; when another text file such as a unit or a `.desktop` file names it; and when no script copies it by name. A copy under a new name of the same kind is followed: what is done with `plugin.png` after `install -Dm644 logo.png …/plugin.png` counts as done with `logo.png`, two renames deep. The file is still listed as uninspected, bound into the snapshot digest and reported in `changes`.
+- A finding's grade can depend on the line it matched, not only on its rule. A model's `review` finding stays `medium` whatever grade or rule name it carries.
+- `BUILD-DOWNLOAD` and `SCRIPT-DOWNLOAD` are `high` when what is downloaded is run: an interpreter one-liner that fetches, a download piped into or substituted for a shell or an interpreter, or the saved file (`-o NAME`, `-O`, `> NAME`, wget's default name) run on the same or a later line of the file by a shell, an interpreter, `./NAME`, `source` or `chmod +x`. A plain download, or a tarball that is unpacked and built, stays `medium`.
+- `OUTSIDE-WRITE` also reports a write into `~` or `$HOME`, and is `high` when the target is under `/home`, `/root` or `~`. `STARTUP-FILE` also covers any user's `.ssh/authorized_keys`, including `~user/`.
+- `PROMPT-INJECTION` looks only at the scripts and `.SRCINFO`, comments included. A prompt in a data file the package ships (`*.txt`, `*.md`, `*.json`, `*.yaml`, `*.toml`), such as the system prompt of an AI tool, is content and is not reported.
+- `NUMERIC-HOST` is `high`.
+- `SETUID` is `medium` for setgid without setuid on a file and for `setcap` whose only capability is `cap_net_bind_service`; setuid and other capabilities stay `high`. `setcap -r`, which removes capabilities, is not reported.
+- The sentences behind the advice describe the recipe's findings. `low` means that no rule asked for a decision; it is not an assessment of the software. The five advice labels are unchanged.
+- A `${…}` outside quotes that contains an empty pair of quotes (`${pkgname//-bin/""}`) no longer stops the scanner from trusting later comments.
 
 ### Fixed
 

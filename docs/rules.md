@@ -14,15 +14,15 @@ Every report also carries one word of advice, `risk` in the JSON. The decision s
 
 | Advice | `risk` | When | Decision |
 | --- | --- | --- | --- |
-| Looks fine | `low` | Nothing found, or notes only. | `no_findings` |
-| Check first | `medium` | A `review` finding of a kind legitimate recipes also have: an unverified or unencrypted download, a download during the build, `eval`, a file nobody read, a model's opinion. | `manual_review` |
-| Be careful | `high` | A `review` finding that gives the package root-level or lasting power, reaches for credentials, or hides what runs. Marked **high** in the table below. | `manual_review` |
+| Looks fine | `low` | No rule asked for a decision: nothing found, or notes only. | `no_findings` |
+| Check first | `medium` | A `review` finding of a kind legitimate recipes also have: an unverified or unencrypted download, a download during the build, `eval`, a file nobody read whose content a script uses, a group's rights or a low port, a model's opinion. | `manual_review` |
+| Be careful | `high` | A `review` finding of the graver kind: it would give the package root-level or lasting power, reach for credentials, or hide what runs. Marked **High** in the table below. | `manual_review` |
 | Do not install | `critical` | A `block` finding. | `blocked` |
 | Could not check | `unknown` | The review is incomplete. | `incomplete` |
 
-The review's advice is the highest among its findings, and each finding carries its own `risk`. A model's `review` finding is always `medium`: it is an opinion, and when a model thinks something has no honest use it says `block`. A model cannot lower the advice.
+The review's advice is the highest among its findings, and each finding carries its own `risk`. A rule's `review` finding is graded where its line is read, so some rules are high only on some lines (a download that is then run, a write into a home directory); the table says which. A model's `review` finding is always `medium`, whatever rule name or grade it carries: it is an opinion, and when a model thinks something has no honest use it says `block`. A model cannot lower the advice.
 
-"Looks fine" is about the recipe. It says nothing about the software the recipe downloads, which no rule reads.
+`low`, "Looks fine", means that no rule asked for a decision about the recipe. It is not an assessment of the software the recipe downloads, which no rule reads.
 
 Rules are text patterns over one line. They do not parse or run shell, so they can be evaded and they can match harmless text. [The threat model](threat-model.md) states the limits.
 
@@ -33,7 +33,7 @@ Rules are text patterns over one line. They do not parse or run shell, so they c
 - **Recipe**: the PKGBUILD, which runs while the package is built.
 - **Install script**: `*.install`, which pacman runs as root when the package is installed, upgraded or removed.
 - **Helper**: the other scripts: what the recipe ships or runs.
-- **Everything**: every text file, `.SRCINFO` included.
+- **Recipe text**: the scripts and `.SRCINFO`: what a reviewer reads as the recipe. Not a data file the package ships (`*.txt`, `*.md`, `*.json`, `*.yaml`, `*.toml` and the like), whose text is content.
 
 Whole-line shell comments are skipped unless the rule says otherwise.
 
@@ -79,7 +79,7 @@ A line that matches a `block` rule is reported for that rule alone.
 
 ## Review
 
-A rule marked **High** gives the advice "Be careful"; the others give "Check first". A `block` rule that matches printed text (see above) is reported here as high.
+A rule marked **High** gives the advice "Be careful"; the others give "Check first". Where only some lines are high, the row says which. A `block` rule that matches printed text (see above) is reported here as high.
 
 | Rule | Looks in | Matches |
 | --- | --- | --- |
@@ -88,25 +88,25 @@ A rule marked **High** gives the advice "Be careful"; the others give "Check fir
 | `PRIVILEGE` | Scripts, commands, command start | **High.** `sudo`, `doas`, `pkexec`, `run0`, or `su` with an option. |
 | `SKIPPED-CHECKSUM` | Recipe | A `SKIP` checksum for a source that nothing else verifies. See below. |
 | `PLAIN-HTTP` | Scripts, commands | An `http://` URL. Not in `url=` or `pkgdesc=`, not an XML namespace, not the local machine. |
-| `PROMPT-INJECTION` | Everything, comments included | **High.** Text addressed to an AI reviewer. |
+| `PROMPT-INJECTION` | Recipe text, comments included | **High.** Text addressed to an AI reviewer. A prompt in a data file the package ships, such as the system prompt of an AI tool, is not reported. |
 | `RAW-SOCKET` | Code | **High.** A connection through the shell's `/dev/tcp` or `/dev/udp`. |
-| `SETUID` | Code | **High.** `chmod` with a setuid or setgid mode, in octal (`4755`, `04755`) or symbols (`u+s`, `u=rwxs`); `install` with such a mode (`-m4755`, `--mode=4755`); `setcap`. Not a directory created setgid, and not `g+s` on a directory under `/var`. |
+| `SETUID` | Code | `chmod` with a setuid or setgid mode, in octal (`4755`, `04755`) or symbols (`u+s`, `u=rwxs`); `install` with such a mode (`-m4755`, `--mode=4755`); `setcap`. Not a directory created setgid, not `g+s` on a directory under `/var`, and not `setcap -r`, which removes capabilities. **High** for setuid and for `setcap` in general; not for setgid without setuid (`g+s`, `2755`), nor for `setcap` whose only capability is `cap_net_bind_service`. |
 | `PRIVILEGE-CONFIG` | Code | **High.** sudoers, `doas.conf`, PAM or polkit rules. |
-| `STARTUP-FILE` | Code, commands | **High.** A user's shell startup or autostart file, or `/etc/ld.so.preload`. |
+| `STARTUP-FILE` | Code, commands | **High.** A user's shell startup or autostart file, any user's `.ssh/authorized_keys`, or `/etc/ld.so.preload`. |
 | `CREDENTIAL-STORE` | Code, commands | **High.** Where browsers, password managers and developer tools keep credentials. |
 | `DROP-HOST` | Code | **High.** A paste, file-drop, webhook or tunnel service, as a host: after `://`, or followed by `/`. A file called `temp.sh` is not the host. |
-| `NUMERIC-HOST` | Code | A URL with a numeric address. Not the local machine or a private network. |
+| `NUMERIC-HOST` | Code | **High.** A URL with a numeric address. Not the local machine or a private network. |
 | `PACKAGE-MANAGER` | Scripts, commands, command start | **High.** pacman or an AUR helper installing, upgrading or removing. Not a query that changes nothing (`-Si`, `-Ss`, `-Q…`); `-Syi` refreshes the databases and is reported. |
 | `PACKAGE-TRUST` | Scripts, commands | **High.** `pacman-key` adding, importing or signing keys; `/etc/pacman.conf`, `/etc/pacman.d/` (not a file placed under `$pkgdir`); `SigLevel`. |
 | `ACCOUNT` | Scripts, commands | **High.** An account added to `wheel`, `sudo`, `root`, `adm` or `docker`; a user created with uid 0 or a duplicate uid; `chpasswd`; `passwd` run as a command (`getent passwd name` is a lookup). |
 | `DISABLE-PROTECTION` | Code, commands | **High.** A firewall, SELinux, AppArmor, auditing or a kernel hardening setting switched off. |
 | `DESTRUCTIVE` | Scripts, commands, command start | **High.** `rm` with options aimed at `/`, a top-level system directory or a home directory; `dd` onto a disk; `mkfs`, `wipefs`, `shred`. |
-| `BUILD-DOWNLOAD` | Recipe, commands, command start | `curl`, `wget` or `aria2c`; `git clone` of a URL; an interpreter's one-liner that names a URL or `urlopen`. |
-| `OUTSIDE-WRITE` | Recipe, commands | A redirect or `tee` into a system directory instead of the package directory. Not the body of a here-document that `cat` or `tee` writes to a file. |
+| `BUILD-DOWNLOAD` | Recipe, commands, command start | `curl`, `wget` or `aria2c`; `git clone` of a URL; an interpreter's one-liner that names a URL or `urlopen`. **High** when what is downloaded is run: an interpreter's one-liner that fetches; a download piped into, or substituted for, a shell or an interpreter; or the file the download saves (`-o NAME`, `--output NAME`, wget's `-O NAME`, `> NAME`, or the last part of the URL for `curl -O`, `wget` and `aria2c`) run on the same line or a later line of the same file, by a shell or an interpreter, as `./NAME` or another path, by `source` or `.`, or made executable with `chmod`. A plain download (`curl -LO …`, `_v=$(curl -s …)`), or one that is unpacked and built (`curl -LO …/x.tar.gz && tar xf x.tar.gz; ./configure`), is not. |
+| `OUTSIDE-WRITE` | Recipe, commands | A redirect or `tee` into a system directory or a home directory (`~`, `$HOME`) instead of the package directory. Not the body of a here-document that `cat` or `tee` writes to a file. **High** when the target is under `/home`, `/root` or `~`. |
 | `INSTALL-DOWNLOAD` | Install script, commands, command start | **High.** A download, or a language package manager, run as root at install time. |
 | `INSTALL-WRITE` | Install script, commands | **High.** A redirect, `tee` or `sed -i` into `/etc`, `/usr`, `/root` or `/boot`; standard output redirected to a path held in a variable; `cp`, `mv`, `ln` or `install` into the places that are read at login, at boot or by pacman (`/etc/profile.d`, udev rules, cron, `ld.so.conf`, ssh, alpm hooks, `/root/.ssh`); `authorized_keys`; `sshd_config`. |
-| `SCRIPT-DOWNLOAD` | Helper, commands, command start | `curl`, `wget` or `aria2c` in a script that comes with the recipe. |
-| `OPAQUE-FILE` | The checkout | An image, a PDF or a binary key, when it is new or has changed since the baseline. |
+| `SCRIPT-DOWNLOAD` | Helper, commands, command start | `curl`, `wget` or `aria2c` in a script that comes with the recipe. **High** on the same lines as `BUILD-DOWNLOAD`. |
+| `OPAQUE-FILE` | The checkout | An image, a PDF or a binary key, new or changed since the baseline, unless the recipe only copies it into place by name. See [below](#files-that-are-not-text). |
 | `OPAQUE-RUN` | Scripts | **High.** Such a file handed to an interpreter, sourced, made executable, installed with an executable mode, or installed into a `bin` directory, under a script or settings name, or where the system reads scripts and settings (`profile.d`, alpm hooks, systemd, udev, cron). Piped into a shell, or named by `install=`, it blocks. |
 
 ## Info
@@ -115,7 +115,7 @@ A rule marked **High** gives the advice "Be careful"; the others give "Check fir
 | --- | --- | --- |
 | `SKIPPED-CHECKSUM` | Recipe | A `SKIP` checksum for a version-control source, for a file verified by a pinned PGP signature, or for a file of the checkout itself. |
 | `PLAIN-HTTP` | Recipe | An `http://` source that has a SHA-2 or BLAKE2 checksum in the same position. |
-| `OPAQUE-FILE` | The checkout | An image, a PDF or a binary key that is byte for byte the file of the baseline. |
+| `OPAQUE-FILE` | The checkout | An image, a PDF or a binary key that is byte for byte the file of the baseline, or that the recipe only copies into place by name (and perhaps lists in `source`). |
 | `SANDBOX-HELPER` | Code | A Chromium sandbox helper made setuid root. See below. |
 | `INSTALL-SERVICE` | Install script, commands, command start | `systemctl` enabling, starting or stopping a service, or a unit linked into a `.wants` directory by hand. |
 | `PRELOAD` | Code | `LD_PRELOAD=`. |
@@ -128,8 +128,14 @@ Chromium-based applications ship a helper that must be setuid root. A command th
 
 A recipe has reason to carry a few kinds of file that are not text: an icon, a licence as a PDF, a binary OpenPGP key. A file is accepted as one of these only when it starts the way that format starts (PNG, JPEG, GIF, WebP, ICO, PDF, an OpenPGP public key) and is not mostly readable text behind that start. It is then kept by its hash and listed in `coverage.uninspected`. No rule reads it and no model receives it.
 
-- `OPAQUE-FILE` names the format and asks for a decision when the file is new to the reader or its bytes changed. It is a note when the baseline has the same file.
+- `OPAQUE-FILE` names the format. It is a note when the baseline has the same file. When the file is new to the reader or its bytes changed, it depends on what the scripts do with it:
+  - A note, when at least one line of a script copies the file into place by name, every line of every script that names it is such a copy or an array item, and no other text file names it. A plain copy is `install`, `cp`, `ln` or `mv` with the file among what is copied, that gives it no executable mode, does not put it where `OPAQUE-RUN` looks, and whose destination cannot give it another kind: a directory (`-t dir`, a trailing `/`), the file's own name, or a name with an extension of the format it was recognised as (`.png` for a PNG, `.pdf` for a PDF, and so on). `install` without `-m` makes a file executable, and so do `cp`, `mv` and `ln` of a file that is executable in the checkout. An array item is a line that is nothing but items of `source`, `noextract` or a checksum array (per architecture too), while the quoting before it was followed; any other array is a variable like any other. A command written over lines joined by `\` is read as one line. A copy that gives the file a new name (`install -Dm644 logo.png …/plugin.png`) is followed: every check made for the file's own name, here and by `OPAQUE-RUN`, is made for the new name too, through copies of copies up to two deep (a third rename asks). A new name is matched as a word, which also finds the path it ends; one written with variables (`${pkgname}.png`) is matched by the whole path as written.
+  - A decision, with the first such line as evidence, when a script names the file in any other way: `cat`, `tail`, `dd`, `bsdtar`, `unzip`, `base64`, a variable assignment, a loop, a redirection, a substitution, a copy under another kind of name (`cp logo.png x.tar`, `cp logo.png helper`, `ln -s logo.png env`). The content is being used, and nobody read it.
+  - A decision when any other text file of the checkout except `.SRCINFO` names it (a unit, a `.desktop` file, a hook, a configuration file): such a file can hand it to a program.
+  - A decision when no script copies it by name. A file the recipe reaches only through a glob or a name built from variables looks exactly like this.
 - `OPAQUE-RUN` looks at what the scripts of the recipe do with such a file. If `install=` names it, or cannot be read while such a file is present, the review does not pass without a person, and a file named by `install=` blocks.
+
+Either way the file stays in `coverage.uninspected` and in `files` with `"opaque": true`, its bytes are bound into the snapshot digest, and a changed file is reported in `changes` against a baseline. An icon that is only installed into place no longer asks for a typed yes: what the review does not say is what the picture contains, which no rule could have judged anyway. A file reached without its name being written out (a glob, a name assembled from variables) still asks, unless a plain copy also names it; what such a copy and a glob do together is not seen.
 
 Every other file that is not text makes the review `incomplete`, as it always did: a text file with a stray byte, an archive, a program. So does any file that has to be text to be reviewed at all, whatever it starts with: the PKGBUILD, `.SRCINFO`, `*.install`, `*.sh`, `*.bash`, `*.zsh`, `*.py`, `*.pl`, `*.rb`, `*.lua`, `*.js`, `*.patch`, `*.diff`, `*.desktop`, `*.conf`, `*.hook`, `*.rules`, systemd units, anything below a directory named `.git`, and any file that starts with `#!`.
 
