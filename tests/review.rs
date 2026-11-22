@@ -776,7 +776,22 @@ fn a_file_nobody_read_that_is_renamed_or_named_elsewhere_still_needs_a_person() 
     let png: &[u8] = &[
         0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, 255, 254,
     ];
-    let probes: [(&str, Option<(&str, &str)>); 4] = [
+    let probes: [(&str, Option<(&str, &str)>); 7] = [
+        (
+            "pkgname=example\nprepare() { cp logo.png run.png; }\nbuild() { python3 run.png; }\n",
+            None,
+        ),
+        (
+            "pkgname=example\nprepare() { mv logo.png x.png; }\nbuild() { bsdtar -xf x.png; }\n",
+            None,
+        ),
+        (
+            "pkgname=example\npackage() { install -Dm644 logo.png \"$pkgdir/usr/lib/x/plugin.png\"; }\n",
+            Some((
+                "x.service",
+                "[Service]\nExecStart=/usr/bin/python3 /usr/lib/x/plugin.png\n",
+            )),
+        ),
         (
             "pkgname=example\nprepare() { cp logo.png x.tar; }\nbuild() { bsdtar -xf x.tar; }\n",
             None,

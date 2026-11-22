@@ -1437,12 +1437,8 @@ pub(crate) fn opaque(snapshot: &Snapshot, baseline: Option<&Snapshot>) -> Vec<Fi
                 before.opaque && before.path == file.path && before.sha256 == file.sha256
             })
         });
-        let name = file.path.rsplit('/').next().unwrap_or(&file.path);
-        let quoted = regex::escape(name);
-        let placed = Regex::new(&format!(
-            r"\b(?:install|cp|mv|ln)\b[^\n]*(?:{quoted}[^\n]*(?:/s?bin/|/profile\.d/|/libalpm/|/systemd/|/udev/|/autostart/|/cron|/pacman\.d/|/modules-load\.d/|/modprobe\.d/|/sudoers|/polkit-1/|\.(?:sh|bash|zsh|py|pl|install|hook|service|timer|rules|desktop|conf)\b)|-[A-Za-z]*m\s*[0-7]?[1357][0-7]{{2}}\b[^\n]*{quoted})"
-        ))
-        .expect("escaped name");
+        // The file's name, and the names plain copies give it.
+        let (names, too_deep) = aliases(snapshot, file);
         let (severity, message, evidence) = if accepted {
             (
                 Severity::Info,
@@ -1453,7 +1449,7 @@ pub(crate) fn opaque(snapshot: &Snapshot, baseline: Option<&Snapshot>) -> Vec<Fi
                 vec![],
             )
         } else {
-            match content_used(snapshot, file, &placed) {
+            match content_used(snapshot, file, &names, too_deep) {
                 Use::Copied => (
                     Severity::Info,
                     format!(
@@ -1482,51 +1478,63 @@ pub(crate) fn opaque(snapshot: &Snapshot, baseline: Option<&Snapshot>) -> Vec<Fi
         };
         findings.push(finding("OPAQUE-FILE", severity, message, evidence));
 
-        let piped =
-            Regex::new(&format!(r"{quoted}[^\n]*\|\s*(?:ba|z|da)?sh\b")).expect("escaped name");
-        let run = Regex::new(&format!(
-            r"(?:\b(?:bash|sh|zsh|dash|source|eval|exec|python[0-9.]*|perl|ruby|node|lua|php|xargs|env)\s[^\n]*|(?:^|[;&|])\s*\.\s+[^\n]*|\./|chmod\s+[^\n]*\+x[^\n]*){quoted}"
-        ))
-        .expect("escaped name");
-        for script in snapshot
-            .files
-            .iter()
-            .filter(|other| !other.opaque && is_script(other))
-        {
-            let comments = comment_lines(&script.text);
-            for (index, line) in script.text.lines().enumerate() {
-                if comments.get(index).copied().unwrap_or(false) || !line.contains(name) {
-                    continue;
-                }
-                let hit = if let Some(m) = piped.find(line) {
-                    Some((
-                        "OPAQUE-RUN",
-                        Severity::Block,
-                        "A file whose content could not be inspected is piped into a shell.",
-                        m,
-                    ))
-                } else {
-                    run.find(line)
-                        .map(|m| {
-                            ("OPAQUE-RUN", Severity::Review, "A file whose content could not be inspected is run or handed to an interpreter.", m)
-                        })
-                        .or_else(|| {
-                            placed.find(line).map(|m| {
-                                ("OPAQUE-RUN", Severity::Review, "A file whose content could not be inspected is installed as a program, or where the system reads scripts and settings.", m)
+        // Running it, under its own name or a name a copy gave it.
+        let mut reported: Vec<(String, usize)> = Vec::new();
+        for (alias, name) in names.iter().enumerate() {
+            let quoted = regex::escape(name);
+            let placed = placed_for(name);
+            let piped =
+                Regex::new(&format!(r"{quoted}[^\n]*\|\s*(?:ba|z|da)?sh\b")).expect("escaped name");
+            let run = Regex::new(&format!(
+                r"(?:\b(?:bash|sh|zsh|dash|source|eval|exec|python[0-9.]*|perl|ruby|node|lua|php|xargs|env)\s[^\n]*|(?:^|[;&|])\s*\.\s+[^\n]*|\./|chmod\s+[^\n]*\+x[^\n]*){quoted}"
+            ))
+            .expect("escaped name");
+            for script in snapshot
+                .files
+                .iter()
+                .filter(|other| !other.opaque && is_script(other))
+            {
+                let comments = comment_lines(&script.text);
+                for (index, line) in script.text.lines().enumerate() {
+                    // A name a copy gave it may be a path written with quotes.
+                    let unquoted = line.replace(['"', '\''], "");
+                    let line = if alias == 0 { line } else { unquoted.as_str() };
+                    if comments.get(index).copied().unwrap_or(false)
+                        || !line.contains(name.as_str())
+                        || reported.contains(&(script.path.clone(), index))
+                    {
+                        continue;
+                    }
+                    let hit = if let Some(m) = piped.find(line) {
+                        Some((
+                            Severity::Block,
+                            "A file whose content could not be inspected is piped into a shell.",
+                            m,
+                        ))
+                    } else {
+                        run.find(line)
+                            .map(|m| {
+                                (Severity::Review, "A file whose content could not be inspected is run or handed to an interpreter.", m)
                             })
-                        })
-                };
-                if let Some((id, severity, message, matched)) = hit {
-                    findings.push(finding(
-                        id,
-                        severity,
-                        message.into(),
-                        vec![Evidence {
-                            path: script.path.clone(),
-                            line: index + 1,
-                            quote: matched.as_str().chars().take(512).collect(),
-                        }],
-                    ));
+                            .or_else(|| {
+                                placed.find(line).map(|m| {
+                                    (Severity::Review, "A file whose content could not be inspected is installed as a program, or where the system reads scripts and settings.", m)
+                                })
+                            })
+                    };
+                    if let Some((severity, message, matched)) = hit {
+                        reported.push((script.path.clone(), index));
+                        findings.push(finding(
+                            "OPAQUE-RUN",
+                            severity,
+                            message.into(),
+                            vec![Evidence {
+                                path: script.path.clone(),
+                                line: index + 1,
+                                quote: matched.as_str().chars().take(512).collect(),
+                            }],
+                        ));
+                    }
                 }
             }
         }
@@ -1546,38 +1554,154 @@ enum Use {
     Used(Evidence),
 }
 
-/// What the checkout does with `file`. A line of a script that names it is a
-/// plain copy (see `plain_copy`) or an item of one of makepkg's file arrays
-/// (`source`, `noextract`, a checksum array) on a line that is nothing but
-/// items; anything else (`cat`, `tail`, `bsdtar`, `base64`, a variable or
-/// another array, a loop, a redirection, a copy under another kind of name)
-/// uses its content. So does a mention in any other text file except
-/// `.SRCINFO`: a unit, a `.desktop` file, a hook or a configuration file
-/// can hand it to a program.
-fn content_used(snapshot: &Snapshot, file: &crate::model::PackageFile, placed: &Regex) -> Use {
+/// How deep renames of renames are followed: a copy of a copy of the file is
+/// still followed, a copy of that is not, and the file needs a decision.
+const RENAME_DEPTH: usize = 2;
+
+/// Where `OPAQUE-RUN` looks for a file called `name` being installed: as a
+/// program, under a script or settings name, or where the system reads them.
+fn placed_for(name: &str) -> Regex {
+    let quoted = regex::escape(name);
+    Regex::new(&format!(
+        r"\b(?:install|cp|mv|ln)\b[^\n]*(?:{quoted}[^\n]*(?:/s?bin/|/profile\.d/|/libalpm/|/systemd/|/udev/|/autostart/|/cron|/pacman\.d/|/modules-load\.d/|/modprobe\.d/|/sudoers|/polkit-1/|\.(?:sh|bash|zsh|py|pl|install|hook|service|timer|rules|desktop|conf)\b)|-[A-Za-z]*m\s*[0-7]?[1357][0-7]{{2}}\b[^\n]*{quoted})"
+    ))
+    .expect("escaped name")
+}
+
+/// A pattern that finds any of `names` as a whole word, in text with its
+/// quotes removed.
+fn naming(names: &[String]) -> Regex {
+    let alternatives: Vec<String> = names.iter().map(|name| regex::escape(name)).collect();
+    Regex::new(&format!(
+        r"(?:^|[^A-Za-z0-9_.-])(?:{})(?:$|[^A-Za-z0-9_.-])",
+        alternatives.join("|")
+    ))
+    .expect("escaped names")
+}
+
+/// The commands of a script as the shell joins them: each line, with the
+/// lines a backslash joins to it. The first line and the line after the end.
+fn logical_lines(text: &str) -> Vec<(usize, usize, String)> {
+    let physical: Vec<&str> = text.lines().collect();
+    let mut out = Vec::new();
+    let mut index = 0;
+    while index < physical.len() {
+        let first = index;
+        let mut joined = String::new();
+        while index < physical.len() {
+            let line = physical[index];
+            index += 1;
+            match line.strip_suffix('\\') {
+                Some(part) => {
+                    joined.push_str(part);
+                    joined.push(' ');
+                }
+                None => {
+                    joined.push_str(line);
+                    break;
+                }
+            }
+        }
+        out.push((first, index, joined));
+    }
+    out
+}
+
+/// The names `file` goes by in the scripts: its own, and the names plain
+/// copies give it (`install -Dm644 logo.png …/plugin.png` makes it
+/// `plugin.png` too), followed through copies of copies up to
+/// `RENAME_DEPTH`. A copy beyond that is returned as evidence: the file
+/// needs a decision.
+fn aliases(
+    snapshot: &Snapshot,
+    file: &crate::model::PackageFile,
+) -> (Vec<String>, Option<Evidence>) {
+    let own = file
+        .path
+        .rsplit('/')
+        .next()
+        .unwrap_or(&file.path)
+        .to_string();
+    let mut names = vec![(own, 0)];
+    let mut at = 0;
+    while at < names.len() {
+        let (name, depth) = names[at].clone();
+        at += 1;
+        let pattern = naming(std::slice::from_ref(&name));
+        let known: Vec<String> = names.iter().map(|(name, _)| name.clone()).collect();
+        for script in snapshot
+            .files
+            .iter()
+            .filter(|other| !other.opaque && is_script(other))
+        {
+            let comments = comment_lines(&script.text);
+            for (first, _, text) in logical_lines(&script.text) {
+                if comments.get(first).copied().unwrap_or(false)
+                    || !pattern.is_match(&text.replace(['"', '\''], ""))
+                {
+                    continue;
+                }
+                let Some(given) = plain_copy(&text, &known, file) else {
+                    continue;
+                };
+                for new in given {
+                    if names.iter().any(|(known, _)| *known == new) {
+                        continue;
+                    }
+                    if depth + 1 > RENAME_DEPTH {
+                        let line = script.text.lines().nth(first).unwrap_or("");
+                        let names = names.into_iter().map(|(name, _)| name).collect();
+                        return (
+                            names,
+                            Some(Evidence {
+                                path: script.path.clone(),
+                                line: first + 1,
+                                quote: line.trim().chars().take(512).collect(),
+                            }),
+                        );
+                    }
+                    names.push((new, depth + 1));
+                }
+            }
+        }
+    }
+    (names.into_iter().map(|(name, _)| name).collect(), None)
+}
+
+/// What the checkout does with `file`, which goes by `names` (see
+/// `aliases`). A line of a script that names it is a plain copy (see
+/// `plain_copy`) or an item of one of makepkg's file arrays (`source`,
+/// `noextract`, a checksum array) on a line that is nothing but items;
+/// anything else (`cat`, `tail`, `bsdtar`, `base64`, a variable or another
+/// array, a loop, a redirection, a copy under another kind of name) uses its
+/// content. So does a mention in any other text file except `.SRCINFO`: a
+/// unit, a `.desktop` file, a hook or a configuration file can hand it to a
+/// program. A name given by a copy is checked the same way, and the path a
+/// copy puts it at ends in that name.
+fn content_used(
+    snapshot: &Snapshot,
+    file: &crate::model::PackageFile,
+    names: &[String],
+    too_deep: Option<Evidence>,
+) -> Use {
     static FILE_ARRAY: LazyLock<Regex> = LazyLock::new(|| {
         Regex::new(r"^(?:source|noextract|(?:md5|sha1|sha224|sha256|sha384|sha512|b2|ck)sums)(?:_[A-Za-z0-9_]+)?$")
             .expect("built-in pattern must compile")
     });
-    let name = file.path.rsplit('/').next().unwrap_or(&file.path);
-    let named = Regex::new(&format!(
-        r"(?:^|[^A-Za-z0-9_.-]){}(?:$|[^A-Za-z0-9_.-])",
-        regex::escape(name)
-    ))
-    .expect("escaped name");
+    if let Some(evidence) = too_deep {
+        return Use::Used(evidence);
+    }
+    let named = naming(names);
     let mut copied = false;
     for other in snapshot.files.iter().filter(|other| !other.opaque) {
-        if is_script(other) {
-            continue;
-        }
-        if other.path == ".SRCINFO" {
+        if is_script(other) || other.path == ".SRCINFO" {
             continue;
         }
         if let Some((index, line)) = other
             .text
             .lines()
             .enumerate()
-            .find(|(_, line)| named.is_match(line))
+            .find(|(_, line)| named.is_match(&line.replace(['"', '\''], "")))
         {
             return Use::Used(Evidence {
                 path: other.path.clone(),
@@ -1592,49 +1716,33 @@ fn content_used(snapshot: &Snapshot, file: &crate::model::PackageFile, placed: &
         .filter(|other| !other.opaque && is_script(other))
     {
         let kinds = line_kinds(&script.text);
-        let (arrays, names) = arrays(&script.text);
+        let (arrays, items) = arrays(&script.text);
         let file_lines: Vec<usize> = arrays
             .iter()
             .filter(|(array, _)| FILE_ARRAY.is_match(array))
             .flat_map(|(_, items)| items.iter().map(|(line, _)| *line))
             .collect();
-        let physical: Vec<&str> = script.text.lines().collect();
-        let mut index = 0;
-        while index < physical.len() {
-            // One command written over lines joined by a backslash.
-            let first = index;
-            let mut text = String::new();
-            while index < physical.len() {
-                let line = physical[index];
-                index += 1;
-                match line.strip_suffix('\\') {
-                    Some(joined) => {
-                        text.push_str(joined);
-                        text.push(' ');
-                    }
-                    None => {
-                        text.push_str(line);
-                        break;
-                    }
-                }
-            }
-            if kinds.comments.get(first).copied().unwrap_or(false) || !named.is_match(&text) {
+        for (first, end, text) in logical_lines(&script.text) {
+            if kinds.comments.get(first).copied().unwrap_or(false)
+                || !named.is_match(&text.replace(['"', '\''], ""))
+            {
                 continue;
             }
-            let listed = (first..index).all(|k| {
-                names.contains(&(k + 1)) && file_lines.contains(&(k + 1)) && k < kinds.trusted
+            let listed = (first..end).all(|k| {
+                items.contains(&(k + 1)) && file_lines.contains(&(k + 1)) && k < kinds.trusted
             });
             if listed {
                 continue;
             }
-            if plain_copy(&text, file, placed) {
+            if plain_copy(&text, names, file).is_some() {
                 copied = true;
                 continue;
             }
+            let line = script.text.lines().nth(first).unwrap_or("");
             return Use::Used(Evidence {
                 path: script.path.clone(),
                 line: first + 1,
-                quote: physical[first].trim().chars().take(512).collect(),
+                quote: line.trim().chars().take(512).collect(),
             });
         }
     }
@@ -1655,19 +1763,28 @@ fn extensions(format: &str) -> &'static [&'static str] {
     }
 }
 
-/// Whether every command on `line` that names `file` is a plain copy of it:
-/// `install`, `cp`, `ln` or `mv` with the file among what is copied, no
+/// Whether every command on `line` that names `file`, by any of the `names`
+/// it goes by, is a plain copy of it: `install`, `cp`, `ln` or `mv` with the
+/// file among what is copied, no
 /// executable mode (`install` without `-m` gives one, and `cp`, `mv` and
 /// `ln` keep the file's own), not where `placed` (what `OPAQUE-RUN` looks
 /// for) matches, and a destination that cannot give it another kind: a
 /// directory (`-t dir`, a trailing `/`), the file's own name, or a name
 /// with an extension of the format it was recognised as. `cp icon.png x.tar`
-/// makes an archive of it; `cp icon.png helper` makes a program.
-fn plain_copy(line: &str, file: &crate::model::PackageFile, placed: &Regex) -> bool {
-    let name = file.path.rsplit('/').next().unwrap_or(&file.path);
-    if line.contains("$(") || line.contains(['`', '<', '>']) || placed.is_match(line) {
-        return false;
+/// makes an archive of it; `cp icon.png helper` makes a program. If so, the
+/// new names the copies give it, which have to be followed in turn.
+fn plain_copy(
+    line: &str,
+    names: &[String],
+    file: &crate::model::PackageFile,
+) -> Option<Vec<String>> {
+    if line.contains("$(")
+        || line.contains(['`', '<', '>'])
+        || names.iter().any(|name| placed_for(name).is_match(line))
+    {
+        return None;
     }
+    let mut given = Vec::new();
     let base = |word: &str| -> String {
         word.trim_end_matches('/')
             .rsplit('/')
@@ -1675,8 +1792,12 @@ fn plain_copy(line: &str, file: &crate::model::PackageFile, placed: &Regex) -> b
             .unwrap_or(word)
             .to_string()
     };
-    line.split([';', '|', '&'])
-        .filter(|command| command.contains(name))
+    let plain = line
+        .split([';', '|', '&'])
+        .filter(|command| {
+            let unquoted = command.replace(['"', '\''], "");
+            names.iter().any(|name| unquoted.contains(name.as_str()))
+        })
         .all(|command| {
             let words: Vec<String> = shell_words(command)
                 .into_iter()
@@ -1741,16 +1862,35 @@ fn plain_copy(line: &str, file: &crate::model::PackageFile, placed: &Regex) -> b
                     _ => return false,
                 }
             };
-            if !sources.iter().any(|source| base(source) == name) {
+            let Some(source) = sources
+                .iter()
+                .find(|source| names.contains(&base(source)) || names.contains(*source))
+                .map(|source| base(source))
+            else {
                 return false;
-            }
+            };
             let kind_kept = destination.is_none_or(|destination| {
                 let last = base(destination);
-                destination.ends_with('/')
-                    || last == name
-                    || last.rsplit_once('.').is_some_and(|(_, ext)| {
-                        extensions(file.format).contains(&ext.to_ascii_lowercase().as_str())
-                    })
+                if destination.ends_with('/') || last == source {
+                    return true;
+                }
+                let same_kind = last.rsplit_once('.').is_some_and(|(_, ext)| {
+                    extensions(file.format).contains(&ext.to_ascii_lowercase().as_str())
+                });
+                if same_kind {
+                    // A name the scanner can read is followed as a word; one
+                    // written with variables (`${pkgname}.png`) by the whole
+                    // path as written.
+                    let readable = last
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b"_.+@-".contains(&b));
+                    given.push(if readable {
+                        last
+                    } else {
+                        destination.to_string()
+                    });
+                }
+                same_kind
             });
             let not_executable = if program == "install" {
                 install_mode(&words[1..]).is_some_and(|mode| !executable(&mode))
@@ -1758,7 +1898,8 @@ fn plain_copy(line: &str, file: &crate::model::PackageFile, placed: &Regex) -> b
                 file.mode & 0o111 == 0
             };
             kind_kept && not_executable
-        })
+        });
+    plain.then_some(given)
 }
 
 /// The words of a command, with plain quoting removed: `'a b'` is one
@@ -3871,6 +4012,76 @@ mod tests {
     }
 
     #[test]
+    fn a_copy_under_a_new_name_is_followed() {
+        let found = |recipe: &str, extra: Option<(&str, &str)>| -> Vec<(String, Severity)> {
+            let mut current = with_blob(recipe, "aaaa");
+            if let Some((path, text)) = extra {
+                current.files.push(file(path, text));
+            }
+            opaque(&current, None)
+                .into_iter()
+                .map(|f| (f.rule_id, f.severity))
+                .collect()
+        };
+        let review = ("OPAQUE-FILE".to_string(), Severity::Review);
+        let run = ("OPAQUE-RUN".to_string(), Severity::Review);
+        // Copied to a name of the same kind, then run, unpacked or named by a unit.
+        let got = found(
+            "prepare() { cp icon.png run.png; }\nbuild() { python3 run.png; }\n",
+            None,
+        );
+        assert!(got.contains(&review) && got.contains(&run), "{got:?}");
+        let got = found(
+            "prepare() { mv icon.png x.png; }\nbuild() { bsdtar -xf x.png; }\n",
+            None,
+        );
+        assert_eq!(got, std::slice::from_ref(&review));
+        let got = found(
+            "package() { install -Dm644 icon.png \"$pkgdir/usr/lib/x/plugin.png\"; }\n",
+            Some((
+                "x.service",
+                "[Service]\nExecStart=/usr/bin/python3 /usr/lib/x/plugin.png\n",
+            )),
+        );
+        assert_eq!(got, std::slice::from_ref(&review));
+        // On the same line as the copy.
+        let got = found(
+            "prepare() { cp icon.png x.png && bsdtar -xf x.png; }\n",
+            None,
+        );
+        assert_eq!(got, std::slice::from_ref(&review));
+        // A rename never used again is still only a copy.
+        let note = [("OPAQUE-FILE".to_string(), Severity::Info)];
+        assert_eq!(
+            found(
+                "package() {\n  install -Dm644 icon.png \"$pkgdir/usr/share/pixmaps/app.png\"\n}\n",
+                None
+            ),
+            note
+        );
+        // A rename of a rename is followed, and so is its use.
+        let twice = "prepare() {\n  cp icon.png a.png\n  cp a.png b.png\n}\n";
+        assert_eq!(found(twice, None), note);
+        assert_eq!(
+            found(&format!("{twice}build() {{ cat b.png; }}\n"), None),
+            std::slice::from_ref(&review)
+        );
+        let got = found(&format!("{twice}build() {{ python3 b.png; }}\n"), None);
+        assert!(got.contains(&review) && got.contains(&run), "{got:?}");
+        // A new name written with variables is followed by its whole path.
+        let got = found(
+            "prepare() { cp icon.png \"$srcdir/$_x.png\"; }\nbuild() { python3 \"$srcdir/$_x.png\"; }\n",
+            None,
+        );
+        assert!(got.contains(&review) && got.contains(&run), "{got:?}");
+        // Beyond the depth followed, the file needs a decision.
+        let thrice = "prepare() {\n  cp icon.png a.png\n  cp a.png b.png\n  cp b.png c.png\n}\n";
+        let found_deep = opaque(&with_blob(thrice, "aaaa"), None);
+        assert_eq!(found_deep[0].severity, Severity::Review);
+        assert_eq!(found_deep[0].evidence[0].line, 4);
+    }
+
+    #[test]
     fn real_recipes_that_only_install_an_icon_or_a_licence_are_notes() {
         let with = |path: &str, format: &'static str, recipe: &str| -> Severity {
             let mut current = snapshot(recipe);
@@ -3888,8 +4099,16 @@ mod tests {
         // notion-app-electron: copied to a name of the same kind elsewhere.
         let notion = "source=(\n\tnotion.png\n)\npackage() {\n\tinstall -vDm644 \"$srcdir/notion.png\" \"$srcdir/asar_patched/.webpack/main/trayIcon.png\"\n\tinstall -vDm644 \"$srcdir/notion.png\" -t \"$share/icons/hicolor/256x256/apps\"\n}\n";
         assert_eq!(with("notion.png", "PNG image", notion), Severity::Info);
-        // librewolf-bin: a command joined over lines, after `${…""}`.
-        let librewolf = "_u=x/${pkgname//-bin/\"\"}/y\nsource=(\n  default192x192.png\n)\npackage() {\n  install -Dvm644 ${srcdir}/default192x192.png \\\n    \"$pkgdir/usr/share/icons/hicolor/192x192/apps/librewolf.png\"\n}\n";
+        // The real recipe goes on to patch the application's code to load
+        // the copy by its new name. That is a use of the content.
+        let patched = notion.replace(
+            "\n}\n",
+            "\n\tsg_patch_select method_definition \\\n\t\t'class X { getIcon(){ $$$BODY } }' \\\n\t\t'getIcon(){return require(\"path\").resolve(__dirname,\"trayIcon.png\");}'\n}\n",
+        );
+        assert_eq!(with("notion.png", "PNG image", &patched), Severity::Review);
+        // librewolf-bin: a command joined over lines, after `${…""}`, to a
+        // name written with a variable, next to other copies to such names.
+        let librewolf = "_u=x/${pkgname//-bin/\"\"}/y\nsource=(\n  default192x192.png\n)\npackage() {\n  for i in 16 32; do\n    install -Dvm644 ${srcdir}/source/default$i.png \\\n      \"$pkgdir/usr/share/icons/hicolor/${i}x${i}/apps/${pkgname//-bin/\"\"}.png\"\n  done\n  install -Dvm644 ${srcdir}/default192x192.png \\\n    \"$pkgdir/usr/share/icons/hicolor/192x192/apps/${pkgname//-bin/\"\"}.png\"\n}\n";
         assert_eq!(
             with("default192x192.png", "PNG image", librewolf),
             Severity::Info
